@@ -15,7 +15,6 @@ env:
   # 因此只能走宿主机 IP + 映射端口（与 runner 的 GITEA_INSTANCE_URL 一致）
   GITEA_SERVER: http://10.0.0.5:3001
   NODE_VERSION: "20"
-  PNPM_VERSION: "9"
   TAG_NAME: ${{ gitea.ref_name }}
 
 jobs:
@@ -75,16 +74,14 @@ jobs:
         with:
           github-server-url: ${{ env.GITEA_SERVER }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      # pnpm v11+ 必须用 pnpm/setup（action-setup 官方仅支持 v10 及以下）
+      # version 省略，从 package.json 的 packageManager 读取；一步装好 pnpm + Node.js + store 缓存
+      - name: Setup pnpm and Node.js
+        uses: pnpm/setup@v1
         with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+          runtime: node@${{ env.NODE_VERSION }}
+          cache: true
+          install: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -179,16 +176,14 @@ jobs:
         with:
           github-server-url: ${{ env.GITEA_SERVER }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      # pnpm v11+ 必须用 pnpm/setup（action-setup 官方仅支持 v10 及以下）
+      # version 省略，从 package.json 的 packageManager 读取；一步装好 pnpm + Node.js + store 缓存
+      - name: Setup pnpm and Node.js
+        uses: pnpm/setup@v1
         with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+          runtime: node@${{ env.NODE_VERSION }}
+          cache: true
+          install: false
 
       - name: Setup JDK 17
         if: matrix.platform == 'android'
