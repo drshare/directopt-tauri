@@ -10,6 +10,10 @@ permissions:
   contents: write
 
 env:
+  # job 容器由 runner 通过 docker.sock 在宿主机上创建，运行在独立的
+  # GITEA-ACTIONS-*-network 里，既不在 gitea_net 也访问不到容器自己的 localhost，
+  # 因此只能走宿主机 IP + 映射端口（与 runner 的 GITEA_INSTANCE_URL 一致）
+  GITEA_SERVER: http://10.0.0.5:3001
   NODE_VERSION: "20"
   PNPM_VERSION: "9"
   TAG_NAME: ${{ gitea.ref_name }}
@@ -32,7 +36,7 @@ jobs:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           set -euo pipefail
-          API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
           TAG="${TAG_NAME}"
 
           if [ -z "${GITEA_TOKEN:-}" ]; then
@@ -68,6 +72,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          github-server-url: ${{ env.GITEA_SERVER }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -170,6 +176,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          github-server-url: ${{ env.GITEA_SERVER }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -427,7 +435,7 @@ jobs:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           set -euo pipefail
-          API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
           TAG="${TAG_NAME}"
           RELEASE=$(curl -sS -H "Authorization: token ${GITEA_TOKEN}" "${API}/releases/tags/${TAG}" || true)
           ID=$(echo "${RELEASE}" | jq -r '.id // empty')
@@ -443,4 +451,4 @@ jobs:
             -H "Authorization: token ${GITEA_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{"draft":false}' > /dev/null
-          echo "Release ${TAG} 已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          echo "Release ${TAG} 已发布：${GITEA_SERVER}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
