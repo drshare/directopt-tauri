@@ -1,9 +1,10 @@
 import { reactive, readonly } from "vue";
 import type { ResultBundle } from "@/composables/useComputation";
+import type { LogEntry } from "@/composables/useExecutionLog";
 
 /**
  * 计算历史（FR-10 的本地实现）
- * 每次计算完成后记录一份快照（参数 + 结果摘要），可回看、载入、删除。
+ * 每次计算完成后记录一份快照（参数 + 结果摘要 + 执行日志），可回看、载入、删除。
  * 桌面端无后端时使用 localStorage 持久化；接入平台接口后可替换为服务端存储。
  */
 
@@ -21,6 +22,8 @@ export interface HistoryRecord {
   params: Record<string, string | number | number[]>;
   /** 结果快照 */
   result: ResultBundle;
+  /** 本次计算的完整执行日志（上传解析 → 传参 → 各步骤 → 结束） */
+  logs?: LogEntry[];
 }
 
 const STORAGE_KEY = "directopt.computationHistory";
@@ -68,6 +71,8 @@ export interface HistoryInput {
   objectiveLabel: string;
   params: Record<string, string | number | number[]>;
   result: ResultBundle;
+  /** 本次计算的执行日志快照 */
+  logs?: LogEntry[];
 }
 
 /** 新增一条历史记录（最新在前，超出上限丢弃最旧） */

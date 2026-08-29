@@ -9,6 +9,8 @@ import {
   type ProgressPayload,
 } from "@/lib/computeTypes";
 import { applyComputeResult } from "@/composables/useResultData";
+import { addLog, jsonDetail } from "@/composables/useExecutionLog";
+import { uploadedFiles } from "@/composables/useUploadedFiles";
 
 /**
  * 计算任务共享状态
@@ -142,18 +144,22 @@ export async function simulateComputation(): Promise<void> {
   computation.cancelRequested = false;
   computation.startedAt = Date.now();
   computation.message = "任务等待中…当前队列共有 1 个任务等待执行";
+  addLog("计算进度", "warn", "当前为浏览器环境（非 Tauri 桌面端），使用内置算例演示流程");
+  addLog("计算进度", "info", "排队中：任务等待执行");
   await delay(1500);
 
   computation.status = "running";
   computation.progress = 0;
   computation.message = "努力计算中…请勿关闭页面，否则无法显示计算结果";
   for (let progress = 0; progress <= 100; progress += 10) {
+    addLog("计算进度", "info", `演示进度 ${progress}%`);
     computation.progress = progress;
     await delay(120);
   }
 
   computation.status = "done";
   computation.message = "计算完成，可在下方查看结果并导出报告";
+  addLog("计算完成", "success", "演示流程完成（结果为内置算例数据）");
 }
 
 /**
@@ -162,7 +168,7 @@ export async function simulateComputation(): Promise<void> {
  * 2. 监听 compute://progress 事件更新进度（遗传算法逐代回报）；
  * 3. 命令返回后用后端结果负载替换当前展示结果与逐时/敏感性数据；
  * 4. 浏览器（非 Tauri）环境回退为演示流程。
- * 状态机与消息口径保持不变。
+ * 状态机与消息口径保持不变；全部步骤写入执行日志。
  */
 export async function runComputation(): Promise<void> {
   if (!isTauri()) {
@@ -177,6 +183,32 @@ export async function runComputation(): Promise<void> {
   computation.startedAt = Date.now();
   computation.message = "任务已提交至后端计算引擎，正在排队执行…";
 
+  // ---- 开始计算传参日志：完整入参 + 曲线数据摘要 ----
+  const paramsPayload = buildComputeParams();
+  const curvesPayload = buildCurveData();
+  const curveStat = (name: string, s: number[]) => ({
+    列: name,
+    长度: s.length,
+    首值: Number(s[0]?.toFixed(6)),
+    末值: Number(s[s.length - 1]?.toFixed(6)),
+    均值: Number((s.reduce((a, b) => a + b, 0) / s.length).toFixed(6)),
+  });
+  addLog(
+    "开始计算",
+    "info",
+    "提交计算任务至后端（遗传算法 + 8760h 仿真），传参详情见日志",
+    jsonDetail({
+      计算参数: paramsPayload,
+      曲线数据: {
+        用电负荷: curveStat("负荷", curvesPayload.load),
+        风电标幺值: curveStat("风电", curvesPayload.windPu),
+        光伏标幺值: curveStat("光伏", curvesPayload.pvPu),
+        电量电价: curveStat("电价", curvesPayload.price),
+        数据来源: uploadedFiles.curve ? `上传文件「${uploadedFiles.curve.fileName}」` : "内置算例",
+      },
+    }),
+  );
+
   let unlisten: (() => void) | null = null;
   try {
     const { listen } = await import("@tauri-apps/api/event");
@@ -184,16 +216,20 @@ export async function runComputation(): Promise<void> {
       computation.status = "running";
       computation.progress = Math.max(0, Math.min(100, Math.round(e.payload.progress)));
       computation.message = e.payload.message;
+      addLog(
+        "计算进度",
+        "info",
+        `[${computation.progress}%] ${e.payload.message}`,
+      );
     });
 
     const payload = await invoke<ComputeResultPayload>("start_compute", {
-      params: buildComputeParams(),
-      curves: buildCurveData(),
+      params: paramsPayload,
+      curves: curvesPayload,
     });
 
-    // 后端结果 → 界面数据源（逐时电量平衡 / 全年电量指标 / 敏感性分析）
+    // ---- 计算完成：结果摘要日志 ----
     applyComputeResult(payload);
-    // 后端指标 → 头部/投资/成本指标卡
     result.headline = payload.headline.map(formatMetricItem);
     result.invest = payload.invest.map(formatMetricItem);
     result.opex = payload.opex.map(formatMetricItem);
@@ -201,14 +237,33 @@ export async function runComputation(): Promise<void> {
     computation.status = "done";
     computation.progress = 100;
     computation.message = "计算完成，可在下方查看结果并导出报告";
+    const elapsed = ((Date.now() - computation.startedAt) / 1000).toFixed(1);
+    addLog(
+      "计算完成",
+      "success",
+      `计算完成，耗时 ${elapsed} 秒。最优配置：风电 ${payload.best.windKw / 1000} MW / 光伏 ${payload.best.pvKw / 1000} MW / 储能 ${payload.best.essKwh / 1000} MWh`,
+      jsonDetail({
+        耗时秒: Number(elapsed),
+        最优配置: payload.best,
+        适应度: payload.best.fitness,
+        头部指标: payload.headline,
+        投资构成: payload.invest,
+        年运行成本构成: payload.opex,
+        全年电量指标: payload.energyStats,
+        敏感性分析组数: payload.sensitivity.length,
+        逐时序列长度: payload.balance.load.length,
+      }),
+    );
   } catch (err) {
     if (computation.cancelRequested) {
       computation.status = "idle";
       computation.message = "计算已取消";
       computation.cancelRequested = false;
+      addLog("计算进度", "warn", "计算已被用户取消");
     } else {
       computation.status = "error";
       computation.message = typeof err === "string" ? err : `计算失败：${String(err)}`;
+      addLog("计算失败", "error", `计算失败：${computation.message}`);
     }
   } finally {
     unlisten?.();

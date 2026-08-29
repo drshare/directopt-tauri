@@ -1,6 +1,17 @@
 <script setup lang="ts">
-import { computed, ref, watch, type ComponentPublicInstance } from "vue";
+import { computed, onMounted, onUnmounted, ref, type ComponentPublicInstance } from "vue";
 import { toPng } from "html-to-image";
+import { use } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
+import { LineChart as EChartsLine } from "echarts/charts";
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+} from "echarts/components";
+import type { EChartsCoreOption } from "echarts/core";
+import VChart from "vue-echarts";
 import {
   AreaChart,
   BadgeCheck,
@@ -36,9 +47,12 @@ import {
   hourLabels as HOUR_LABELS,
   ratioLabels as SENSITIVITY_RATIO_LABELS,
   sensitivityGroups,
+  type SensitivityGroup,
 } from "@/composables/useResultData";
 import { exportResultWorkbook } from "@/lib/resultExport";
-import SimpleLineChart, { type ChartSeries } from "@/components/charts/SimpleLineChart.vue";
+
+/** 注册 ECharts 按需模块（折线图 + 网格 / 图例 / 提示框 / 缩放组件 + Canvas 渲染器） */
+use([CanvasRenderer, EChartsLine, GridComponent, LegendComponent, TooltipComponent, DataZoomComponent]);
 import {
   Dialog,
   DialogContent,
@@ -76,45 +90,194 @@ async function handlePreview() {
   }
 }
 
-/** 敏感性分析表格与曲线数据（与导出报告共用同一数据源） */
-const sensitivity = sensitivityGroups;
-
-/** 每组敏感性曲线：变动比例 → 适应度 */
-const sensitivitySeries = computed<Record<string, ChartSeries>>(() =>
-  Object.fromEntries(
-    sensitivityGroups.map((g) => [
-      g.group,
-      { name: `${g.element}变动`, color: g.color, values: g.rows.map((r) => Number(r.fitness)) },
-    ]),
-  ),
-);
+/** 敏感性分析表格与曲线数据（与导出报告共用同一数据源；计算完成后读取最新模块级数据） */
+const sensitivity = computed<SensitivityGroup[]>(() => {
+  void computation.status; // 追踪计算状态：计算完成/重算后刷新
+  return sensitivityGroups;
+});
 
 const ratioLabels = SENSITIVITY_RATIO_LABELS;
 
-/** 全年 8760h 电量平衡曲线（与导出报告共用同一数据源） */
-const balanceSeries: ChartSeries[] = BALANCE_SERIES;
+/** 深色模式自适应（跟随 html 元素 class 变化） */
+const isDark = ref(document.documentElement.classList.contains("dark"));
+let darkObserver: MutationObserver | null = null;
+onMounted(() => {
+  darkObserver = new MutationObserver(() => {
+    isDark.value = document.documentElement.classList.contains("dark");
+  });
+  darkObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+});
+onUnmounted(() => darkObserver?.disconnect());
 
-/** 电量平衡曲线缩放窗口（小时序号 0 ~ 8759，最小窗口 24h） */
+const chartColors = computed(() =>
+  isDark.value
+    ? { text: "#94a3b8", split: "#334155", tooltipBg: "#1e293b" }
+    : { text: "#64748b", split: "#e2e8f0", tooltipBg: "#ffffff" },
+);
+
+/** 电量平衡曲线缩放窗口（小时序号 0 ~ 8759），由 dataZoom 事件回写 */
 const HOUR_MAX = 8759;
 const zoomStart = ref(0);
 const zoomEnd = ref(HOUR_MAX);
 
-watch(zoomStart, (s) => {
-  if (s > zoomEnd.value - 24) zoomStart.value = Math.max(0, zoomEnd.value - 24);
+/** 图表固定高度（px），不随容器/内容变化 */
+const SENSITIVITY_CHART_HEIGHT = 190;
+const BALANCE_CHART_HEIGHT = 320;
+
+/** 千分位数值格式（y 轴刻度） */
+function fmtThousand(v: number): string {
+  return v.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
+}
+
+/** 单组敏感性曲线：变动比例 → 适应度 */
+function sensitivityOption(group: SensitivityGroup): EChartsCoreOption {
+  const c = chartColors.value;
+  return {
+    animation: false,
+    grid: { left: 8, right: 16, top: 24, bottom: 6, containLabel: true },
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      backgroundColor: c.tooltipBg,
+      borderColor: c.split,
+      borderRadius: 6,
+      padding: [6, 10],
+      textStyle: { color: c.text, fontSize: 11 },
+      valueFormatter: (v: unknown) => Number(v).toFixed(6),
+    },
+    xAxis: {
+      type: "category",
+      data: ratioLabels,
+      boundaryGap: false,
+      axisLabel: { color: c.text, fontSize: 10, hideOverlap: true },
+      axisLine: { lineStyle: { color: c.split } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      splitNumber: 4,
+      axisLabel: { color: c.text, fontSize: 10, formatter: (v: number) => v.toFixed(4) },
+      splitLine: { lineStyle: { color: c.split, type: "dashed" } },
+    },
+    series: [
+      {
+        name: `${group.element}变动`,
+        type: "line",
+        data: group.rows.map((r) => Number(r.fitness)),
+        lineStyle: { color: group.color, width: 2 },
+        itemStyle: { color: group.color, borderColor: c.tooltipBg, borderWidth: 1 },
+        symbol: "circle",
+        symbolSize: 6,
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: `${group.color}33` },
+              { offset: 1, color: `${group.color}00` },
+            ],
+          },
+        },
+      },
+    ],
+  };
+}
+
+/** 全年 8760h 电量平衡曲线（数据全量传入，展示窗口由 dataZoom 控制） */
+const balanceOption = computed<EChartsCoreOption>(() => {
+  const c = chartColors.value;
+  void computation.status; // 计算完成后重新读取模块级 balanceSeries
+  return {
+    animation: false,
+    grid: { left: 8, right: 16, top: 36, bottom: 34, containLabel: true },
+    legend: {
+      type: "scroll",
+      top: 0,
+      itemWidth: 14,
+      itemHeight: 4,
+      itemGap: 12,
+      icon: "rect",
+      textStyle: { color: c.text, fontSize: 11 },
+      pageIconColor: c.text,
+      pageIconInactiveColor: c.split,
+      pageTextStyle: { color: c.text },
+    },
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      backgroundColor: c.tooltipBg,
+      borderColor: c.split,
+      borderRadius: 6,
+      padding: [6, 10],
+      textStyle: { color: c.text, fontSize: 11 },
+      valueFormatter: (v: unknown) => `${fmtThousand(Number(v))} kWh`,
+    },
+    xAxis: {
+      type: "category",
+      data: HOUR_LABELS,
+      boundaryGap: false,
+      axisLabel: { color: c.text, fontSize: 10, hideOverlap: true },
+      axisLine: { lineStyle: { color: c.split } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      splitNumber: 5,
+      axisLabel: { color: c.text, fontSize: 10, formatter: fmtThousand },
+      splitLine: { lineStyle: { color: c.split, type: "dashed" } },
+    },
+    dataZoom: [
+      { type: "inside", startValue: zoomStart.value, endValue: zoomEnd.value },
+      {
+        type: "slider",
+        height: 18,
+        bottom: 4,
+        startValue: zoomStart.value,
+        endValue: zoomEnd.value,
+        borderColor: c.split,
+        fillerColor: isDark.value ? "#33415599" : "#e2e8f099",
+        handleStyle: { color: c.text },
+        textStyle: { color: c.text, fontSize: 10 },
+      },
+    ],
+    series: BALANCE_SERIES.map((s) => ({
+      name: s.name,
+      type: "line",
+      data: s.values,
+      showSymbol: false,
+      sampling: "lttb",
+      lineStyle: { color: s.color, width: 1.5 },
+      itemStyle: { color: s.color },
+      emphasis: { focus: "series", lineStyle: { width: 2.5 } },
+    })),
+  };
 });
-watch(zoomEnd, (e) => {
-  if (e < zoomStart.value + 24) zoomEnd.value = Math.min(HOUR_MAX, zoomStart.value + 24);
-});
+
+/** dataZoom 交互 → 回写当前显示的小时窗口（用于文字提示） */
+function onBalanceZoom(raw: unknown) {
+  const params = raw as {
+    start?: number;
+    end?: number;
+    startValue?: unknown;
+    endValue?: unknown;
+  };
+  const toIdx = (v: unknown, pct: number | undefined): number | undefined => {
+    if (typeof v === "number" && Number.isFinite(v)) return Math.round(v);
+    if (typeof pct === "number") return Math.round((pct / 100) * HOUR_MAX);
+    return undefined;
+  };
+  const s = toIdx(params.startValue, params.start);
+  const e = toIdx(params.endValue, params.end);
+  if (s !== undefined) zoomStart.value = Math.max(0, Math.min(HOUR_MAX, s));
+  if (e !== undefined) zoomEnd.value = Math.max(0, Math.min(HOUR_MAX, e));
+}
 
 function resetZoom() {
   zoomStart.value = 0;
   zoomEnd.value = HOUR_MAX;
 }
-
-const zoomedBalance = computed(() =>
-  balanceSeries.map((s) => ({ ...s, values: s.values.slice(zoomStart.value, zoomEnd.value + 1) })),
-);
-const zoomedLabels = computed(() => HOUR_LABELS.slice(zoomStart.value, zoomEnd.value + 1));
 
 const exporting = ref(false);
 
@@ -249,7 +412,7 @@ async function handleDownload() {
           <LineChart class="size-4 text-violet-600" />
           敏感性分析（固定两要素 · 变动单一要素，±25% / 步长 5%）
         </h3>
-        <div class="space-y-4">
+        <div class="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div v-for="group in sensitivity" :key="group.group" class="overflow-hidden rounded-lg border">
             <div class="border-b bg-muted/40 px-4 py-2 text-sm font-medium">{{ group.group }}</div>
             <Table>
@@ -280,10 +443,11 @@ async function handleDownload() {
         <div class="mt-4 grid gap-4 xl:grid-cols-3">
           <div v-for="group in sensitivity" :key="group.chartTitle" class="rounded-lg border p-3">
             <p class="mb-2 text-xs font-medium text-muted-foreground">{{ group.chartTitle }}（适应度）</p>
-            <SimpleLineChart
-              :series="[sensitivitySeries[group.group]]"
-              :x-labels="ratioLabels"
-              :height="170"
+            <VChart
+              class="w-full shrink-0"
+              :style="{ height: `${SENSITIVITY_CHART_HEIGHT}px` }"
+              :option="sensitivityOption(group)"
+              autoresize
             />
           </div>
         </div>
@@ -298,37 +462,21 @@ async function handleDownload() {
           电量平衡曲线（全年 8760h）
         </h3>
         <div class="rounded-lg border p-3">
-          <div class="no-capture mb-2 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <div class="no-capture mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p class="text-xs font-medium text-muted-foreground">
-              全年逐时电量平衡（单位：kWh），当前显示第 {{ zoomStart }} ~ {{ zoomEnd }} 小时
+              全年逐时电量平衡（单位：kWh），当前显示第 {{ zoomStart }} ~ {{ zoomEnd }} 小时（可拖动滑块或滚轮缩放）
             </p>
-            <div class="flex flex-wrap items-center gap-x-2 gap-y-2 text-xs text-muted-foreground sm:ml-auto sm:gap-3">
-              <span class="shrink-0">起始</span>
-              <input
-                v-model.number="zoomStart"
-                type="range"
-                :min="0"
-                :max="HOUR_MAX"
-                step="1"
-                class="h-8 min-w-0 flex-1 accent-primary sm:w-28 sm:flex-none"
-                aria-label="起始小时"
-              />
-              <span class="shrink-0">结束</span>
-              <input
-                v-model.number="zoomEnd"
-                type="range"
-                :min="0"
-                :max="HOUR_MAX"
-                step="1"
-                class="h-8 min-w-0 flex-1 accent-primary sm:w-28 sm:flex-none"
-                aria-label="结束小时"
-              />
-              <Button variant="ghost" size="sm" class="h-7 shrink-0 px-2 text-xs" @click="resetZoom">
-                重置
-              </Button>
-            </div>
+            <Button variant="ghost" size="sm" class="h-7 shrink-0 self-start px-2 text-xs" @click="resetZoom">
+              重置
+            </Button>
           </div>
-          <SimpleLineChart :series="zoomedBalance" :x-labels="zoomedLabels" :height="260" />
+          <VChart
+            class="w-full shrink-0"
+            :style="{ height: `${BALANCE_CHART_HEIGHT}px` }"
+            :option="balanceOption"
+            autoresize
+            @datazoom="onBalanceZoom"
+          />
         </div>
         <p class="mt-2 text-xs text-muted-foreground">
           导出报告包含：输入数据（24 项）、输入曲线（全年 8760h 负荷 / 风光标幺值 / 分时电价）、输出数据（最优配置、全年电量指标、投资与运行成本构成）、敏感性分析（三组 ±25% 变动）、逐时电量平衡（全年 8760h）五部分；当前逐时数据取自曲线模板算例，接入真实计算后由后端结果替换。

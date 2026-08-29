@@ -25,4 +25,5 @@ serde_json = "1"
 base64 = "0.22"
 rand = "0.8"
 rayon = "1.10"
+calamine = "0.26"
 

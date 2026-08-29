@@ -54,7 +54,7 @@ async function setFile(file: File, kind: "input" | "curve") {
   try {
     const bytes = await file.arrayBuffer();
     if (kind === "input") {
-      applyInputFile(file.name, bytes);
+      await applyInputFile(file.name, bytes);
       params.inputFile = file.name;
       inputUploadTime.value = time;
     } else {

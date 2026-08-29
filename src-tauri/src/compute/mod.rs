@@ -9,6 +9,7 @@
 pub mod economics;
 pub mod engine;
 pub mod ga;
+pub mod input_parse;
 pub mod params;
 pub mod simulate;
 

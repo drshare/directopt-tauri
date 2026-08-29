@@ -1,11 +1,23 @@
 <script setup lang="ts">
-import { Cloud, FolderOpen } from "@lucide/vue";
+import { ref } from "vue";
+import { Cloud, FolderOpen, LoaderCircle, Play, Timer } from "@lucide/vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import FileManagerDialog from "@/components/files/FileManagerDialog.vue";
+import { computation } from "@/composables/useComputation";
+import { startCompute } from "@/composables/useStartCompute";
+
+const filesOpen = ref(false);
+
+const statusBadge: Record<string, { label: string; cls: string }> = {
+  queued: { label: "排队中", cls: "bg-amber-500 text-white" },
+  running: { label: "计算中", cls: "bg-sky-500 text-white" },
+  done: { label: "已完成", cls: "bg-emerald-500 text-white" },
+  error: { label: "校验未通过", cls: "bg-destructive text-white" },
+};
 
 function handleFiles() {
-  // TODO: 文件管理（FR-10）——查看/删除历史计算输入文件与计算结果，待对接平台接口
-  window.alert("文件管理功能待实现（查看/删除历史输入文件与计算结果）");
+  filesOpen.value = true;
 }
 </script>
 
@@ -36,7 +48,28 @@ function handleFiles() {
           <FolderOpen class="size-4" aria-hidden="true" />
           <span class="hidden sm:inline">文件管理</span>
         </Button>
+        <!-- 状态徽标：仅在非空闲时显示（idle 状态不占空间，保持顶栏简洁） -->
+        <Badge
+          v-if="computation.status !== 'idle'"
+          :class="statusBadge[computation.status]?.cls"
+          class="shrink-0"
+        >
+          {{ statusBadge[computation.status]?.label }}
+        </Badge>
+        <Button
+          size="sm"
+          class="min-w-24 gap-1.5"
+          :disabled="computation.status === 'queued' || computation.status === 'running'"
+          aria-label="开始计算"
+          @click="startCompute"
+        >
+          <LoaderCircle v-if="computation.status === 'running'" class="animate-spin" />
+          <Timer v-else-if="computation.status === 'queued'" />
+          <Play v-else />
+          {{ computation.status === "queued" || computation.status === "running" ? "计算中…" : "开始" }}
+        </Button>
       </div>
     </div>
   </header>
+  <FileManagerDialog v-model:open="filesOpen" />
 </template>

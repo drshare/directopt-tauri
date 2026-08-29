@@ -4,20 +4,21 @@ import UploadSection from "@/components/upload/UploadSection.vue";
 import ParameterSection from "@/components/params/ParameterSection.vue";
 import ComputeControl from "@/components/compute/ComputeControl.vue";
 import HistorySection from "@/components/history/HistorySection.vue";
+import ExecutionLogSection from "@/components/log/ExecutionLogSection.vue";
 import ResultSection from "@/components/result/ResultSection.vue";
 import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 </script>
 
 <template>
   <div class="min-h-dvh bg-muted/30">
     <AppHeader />
     <main class="w-full space-y-4 p-3 sm:space-y-6 sm:p-4 lg:px-6">
-      <!-- 计算控制 + 数据准备与上传（合并卡片，紧凑无大标题） -->
+      <!-- 计算状态提示（排队/进度/异常/完成，空闲时不渲染任何内容） -->
+      <ComputeControl />
+
+      <!-- 数据准备与上传 -->
       <Card>
-        <CardContent class="space-y-4">
-          <ComputeControl />
-          <Separator />
+        <CardContent>
           <UploadSection />
         </CardContent>
       </Card>
@@ -27,6 +28,9 @@ import { Separator } from "@/components/ui/separator";
 
       <!-- 计算历史 -->
       <HistorySection />
+
+      <!-- 执行日志 -->
+      <ExecutionLogSection />
 
       <!-- 计算结果 -->
       <ResultSection />

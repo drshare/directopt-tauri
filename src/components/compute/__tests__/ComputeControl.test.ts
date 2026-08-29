@@ -1,8 +1,10 @@
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import ComputeControl from "@/components/compute/ComputeControl.vue";
 import { computation } from "@/composables/useComputation";
 import { params } from "@/composables/useParams";
+import { startCompute } from "@/composables/useStartCompute";
 
 describe("ComputeControl 计算状态机（含参数校验 FR-5）", () => {
   beforeEach(() => {
@@ -17,16 +19,16 @@ describe("ComputeControl 计算状态机（含参数校验 FR-5）", () => {
     params.mutationRate = "0.3";
   });
 
-  it("初始为 idle（未开始）", () => {
+  it("初始为 idle 时不渲染状态提示（徽标移至顶栏）", () => {
     const wrapper = mount(ComputeControl);
-    expect(wrapper.text()).toContain("未开始");
     expect(computation.status).toBe("idle");
+    expect(wrapper.find(".space-y-3").exists()).toBe(false);
   });
 
   it("曲线未上传时校验失败并阻止计算", async () => {
     params.curveFile = "";
     const wrapper = mount(ComputeControl);
-    await wrapper.find("button").trigger("click");
+    await startCompute();
     expect(computation.status).toBe("error");
     expect(wrapper.text()).toContain("参数校验未通过");
     expect(wrapper.text()).toContain("发电及负荷曲线为必选");
@@ -36,7 +38,7 @@ describe("ComputeControl 计算状态机（含参数校验 FR-5）", () => {
     params.dod = "70";
     params.initialSoc = "10";
     const wrapper = mount(ComputeControl);
-    await wrapper.find("button").trigger("click");
+    await startCompute();
     expect(computation.status).toBe("error");
     expect(wrapper.text()).toContain("储能初始电量 + 充放电深度 ≥ 100%");
   });
@@ -44,7 +46,8 @@ describe("ComputeControl 计算状态机（含参数校验 FR-5）", () => {
   it("校验通过：排队 → 计算中(进度) → 完成", async () => {
     vi.useFakeTimers();
     const wrapper = mount(ComputeControl);
-    await wrapper.find("button").trigger("click");
+    const pending = startCompute();
+    await nextTick();
 
     // 排队
     expect(computation.status).toBe("queued");
@@ -57,19 +60,20 @@ describe("ComputeControl 计算状态机（含参数校验 FR-5）", () => {
     expect(wrapper.text()).toContain("请勿关闭页面");
     await vi.advanceTimersByTimeAsync(1500);
 
-    // 完成
+    // 完成（完成提示已删除，由结果区直接呈现）
     expect(computation.status).toBe("done");
-    expect(wrapper.text()).toContain("计算完成");
+    expect(wrapper.find(".space-y-3").exists()).toBe(false);
+    await pending;
     vi.useRealTimers();
   });
 
-  it("计算中再次点击被禁用", async () => {
+  it("计算中再次点击被禁用（重复调用被忽略）", async () => {
     vi.useFakeTimers();
-    const wrapper = mount(ComputeControl);
-    await wrapper.find("button").trigger("click");
+    startCompute();
     expect(computation.status).toBe("queued");
-    const btn = wrapper.find("button");
-    expect((btn.element as HTMLButtonElement).disabled).toBe(true);
+    // 运行中重复触发应被忽略（顶栏按钮同时处于禁用态）
+    await startCompute();
+    expect(computation.status).toBe("queued");
     vi.clearAllTimers();
     vi.useRealTimers();
   });

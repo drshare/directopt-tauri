@@ -205,18 +205,40 @@ pub fn run_compute(
         params.tech.grid_capacity,
         params.tech.avg_load_rate,
     );
+
+    on_progress(95.0, "正在生成敏感性分析…".to_string());
+    on_progress(99.0, "正在汇总计算结果…".to_string());
+
+    let payload = build_payload(
+        &params, &curves, wind_kw, pv_kw, ess_kwh, &totals, &series, &econ, best_fitness,
+    );
+
+    on_progress(100.0, "计算完成".to_string());
+    Ok(payload)
+}
+
+/// 构建计算结果负载（前端展示 + 报告导出的唯一数据源）。
+///
+/// 供 `run_compute`（遗传算法寻优后）与黄金基准对拍测试（固定配置评估）复用，
+/// 保证两条路径产出的指标口径完全一致。
+pub fn build_payload(
+    params: &ComputeParams,
+    curves: &CurveData,
+    wind_kw: f64,
+    pv_kw: f64,
+    ess_kwh: f64,
+    totals: &Totals,
+    series: &Series,
+    econ: &EconResult,
+    best_fitness: f64,
+) -> ComputeResultPayload {
     let cons = check_constraints(
-        &totals,
+        totals,
         params.tech.self_use_gen_min,
         params.tech.self_use_load_min,
         params.tech.feed_limit,
         params.tech.curtail_limit,
     );
-
-    on_progress(95.0, "正在生成敏感性分析…".to_string());
-    let sensitivity = build_sensitivity(&params, &curves, wind_kw, pv_kw, ess_kwh, &bounds);
-
-    on_progress(99.0, "正在汇总计算结果…".to_string());
 
     let ess_kw = ess_kwh * params.tech.rate;
     let load = totals.load.max(1e-9);
@@ -276,26 +298,31 @@ pub fn run_compute(
         metric("储能年末剩余电量", w(totals.end_soc), "MWh", 2),
     ];
 
+    let bounds: [(f64, f64); 3] = [
+        (params.range.wind_start * 1000.0, params.range.wind_end * 1000.0),
+        (params.range.pv_start * 1000.0, params.range.pv_end * 1000.0),
+        (params.range.ess_start * 1000.0, params.range.ess_end * 1000.0),
+    ];
+    let sensitivity = build_sensitivity(params, curves, wind_kw, pv_kw, ess_kwh, &bounds);
+
     let balance = BalanceSeriesOut {
-        wind: series.wind,
-        pv: series.pv,
-        theory_gen: series.theory_gen,
-        load: series.load,
-        actual_gen: series.actual_gen,
-        charge_ac: series.charge_ac,
-        charge_dc: series.charge_dc,
-        curtailed: series.curtailed,
-        discharge_dc: series.discharge_dc,
-        discharge_ac: series.discharge_ac,
-        grid_import: series.grid_import,
-        feed_in: series.feed_in,
-        soc_dc: series.soc_dc,
+        wind: series.wind.clone(),
+        pv: series.pv.clone(),
+        theory_gen: series.theory_gen.clone(),
+        load: series.load.clone(),
+        actual_gen: series.actual_gen.clone(),
+        charge_ac: series.charge_ac.clone(),
+        charge_dc: series.charge_dc.clone(),
+        curtailed: series.curtailed.clone(),
+        discharge_dc: series.discharge_dc.clone(),
+        discharge_ac: series.discharge_ac.clone(),
+        grid_import: series.grid_import.clone(),
+        feed_in: series.feed_in.clone(),
+        soc_dc: series.soc_dc.clone(),
         end_soc: totals.end_soc,
     };
 
-    on_progress(100.0, "计算完成".to_string());
-
-    Ok(ComputeResultPayload {
+    ComputeResultPayload {
         best: BestOut {
             wind_kw,
             pv_kw,
@@ -309,7 +336,7 @@ pub fn run_compute(
         energy_stats,
         balance,
         sensitivity,
-    })
+    }
 }
 
 fn sum(v: &[f64]) -> f64 {

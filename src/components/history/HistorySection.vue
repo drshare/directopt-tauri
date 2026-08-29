@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   History,
   RotateCcw,
+  ScrollText,
   Trash2,
 } from "@lucide/vue";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ import {
   removeHistory,
   type HistoryRecord,
 } from "@/composables/useHistory";
+import LogList from "@/components/log/LogList.vue";
 
 /** 从结果头部指标卡中提取指定指标值 */
 function metric(record: HistoryRecord, label: string): string {
@@ -117,6 +119,18 @@ function onClear() {
                   <span class="font-medium">{{ item.value }}</span>
                 </span>
               </div>
+              <!-- 随历史记录保存的执行日志 -->
+              <details v-if="record.logs && record.logs.length > 0" class="mt-3">
+                <summary
+                  class="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <ScrollText class="size-3.5 text-teal-600" />
+                  执行日志（{{ record.logs.length }} 条，含上传解析 / 计算传参 / 各步骤详情）
+                </summary>
+                <div class="mt-2">
+                  <LogList :entries="record.logs" :default-open="false" />
+                </div>
+              </details>
             </div>
 
             <div class="flex shrink-0 items-center gap-2">
@@ -147,7 +161,7 @@ function onClear() {
         <Separator class="my-4" />
         <p class="flex items-center gap-1.5 text-xs text-muted-foreground">
           <CircleCheck class="size-3.5 text-emerald-600" />
-          共 {{ history.length }} 条记录（最多保留 50 条，超出自动删除最旧记录）
+          共 {{ history.length }} 条记录（最多保留 50 条，超出自动删除最旧记录；每条记录含完整执行日志）
         </p>
       </template>
     </CardContent>

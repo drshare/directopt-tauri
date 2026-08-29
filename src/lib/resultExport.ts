@@ -8,6 +8,8 @@ import {
 import { params } from "@/composables/useParams";
 import { result } from "@/composables/useComputation";
 import { uploadedCurveBytes } from "@/composables/useUploadedFiles";
+import { addLog } from "@/composables/useExecutionLog";
+import { saveManagedFile } from "@/composables/useFileStore";
 import { curveTemplate } from "@/data/curveTemplate";
 import { hourlyBalance } from "@/data/hourlyBalance";
 import {
@@ -469,18 +471,32 @@ export async function exportResultWorkbook(): Promise<string> {
     : buildResultWorkbook();
   const fileName = `计算结果_${timestamp()}.xlsx`;
 
+  addLog(
+    "结果导出",
+    "info",
+    curveBytes
+      ? `生成结果文件「${fileName}」：基于上传曲线文件副本填写 output Sheet，并补充 4 个丰富结果 Sheet`
+      : `生成结果文件「${fileName}」：未上传曲线文件，导出独立五 Sheet 报告`,
+  );
+
+  const xlsxBytes = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+
   if (isTauri()) {
-    const data = arrayBufferToBase64(
-      XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer,
-    );
+    const data = arrayBufferToBase64(xlsxBytes);
     const savedPath = await invoke<string>("save_template_file", {
       name: fileName,
       data,
     });
+    // 归档结果文件（文件管理 FR-10）
+    void saveManagedFile(fileName, xlsxBytes, "result");
     await revealSavedFile(savedPath);
+    addLog("结果导出", "success", `计算结果已保存：${savedPath}`);
     return savedPath;
   }
 
+  // 归档结果文件（浏览器环境为内存归档）
+  void saveManagedFile(fileName, xlsxBytes, "result");
   XLSX.writeFile(wb, fileName, { bookType: "xlsx", type: "file" });
+  addLog("结果导出", "success", `计算结果已开始下载：${fileName}`);
   return fileName;
 }
