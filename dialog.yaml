@@ -1,0 +1,372 @@
+- generic:
+  - generic:
+    - generic:
+      - banner:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - heading [level=1]: 绿电直连新能源优化配置软件
+                - generic: V2.2
+              - paragraph: 风电 · 光伏 · 储能最优容量配置计算
+          - generic:
+            - button: 文件管理
+      - main:
+        - generic:
+          - generic:
+            - heading [level=3]: 数据准备与上传
+            - paragraph: 下载模板并填写，通过上传文件一次性导入参数与全年 8760h 时序数据
+          - generic:
+            - generic:
+              - generic: 风电
+              - generic: →
+              - generic: 光伏
+              - generic: →
+              - generic: 储能
+              - generic: →
+              - generic: 数据中心
+              - generic: →
+              - generic: 电网
+            - generic:
+              - generic: 模板文件下载
+              - generic:
+                - generic:
+                  - button:
+                    - generic: 输入文件模板：inputtemplate_ldzl_3.0.xlsx
+                  - button
+                - generic:
+                  - button:
+                    - generic: 曲线及分时电价模板：curvetemplate_ldzl_3.0.xlsx
+                  - button
+            - generic:
+              - generic:
+                - generic:
+                  - generic: 上传输入文件
+                  - generic: 可选
+                - paragraph: 可上传技术参数、经济评价参数等静态数据；也可直接在下方表单中填写
+                - generic:
+                  - button
+                - paragraph: 未选择文件
+              - generic:
+                - generic:
+                  - generic: 上传发电及负荷曲线
+                  - generic: 必选
+                - paragraph: 必填全年 8760h 负荷、风光标幺值、分时电价及过网费四项费用时序数据
+                - generic:
+                  - button
+                - paragraph: 未选择文件
+        - generic:
+          - generic:
+            - heading [level=3]: 参数输入与确认
+            - paragraph: 上传文件后自动读取参数；界面修改将覆盖上传值；“储能时段 / 输配电费方案 / 优化目标”仅在界面操作
+          - generic:
+            - generic:
+              - tablist:
+                - tab [selected]: 技术参数
+                - tab: 经济评价参数
+                - tab: 择优范围与算法
+                - tab: 储能时段
+                - tab: 方案与目标
+              - tabpanel:
+                - generic:
+                  - generic:
+                    - generic: 储能充放电深度
+                    - generic:
+                      - textbox: "80"
+                      - generic: "%"
+                    - paragraph: 建议 80~90（磷酸铁锂）/80（三元锂）
+                  - generic:
+                    - generic: 电池充放电倍率
+                    - generic:
+                      - textbox: "0.5"
+                      - generic: C
+                  - generic:
+                    - generic: 储能初始电量
+                    - generic:
+                      - textbox: "20"
+                      - generic: "%"
+                    - paragraph: 与充放电深度之和 ≥ 100
+                  - generic:
+                    - generic: 储能充电效率
+                    - generic:
+                      - textbox: "93"
+                      - generic: "%"
+                    - paragraph: 默认 93
+                  - generic:
+                    - generic: 储能放电效率
+                    - generic:
+                      - textbox: "92"
+                      - generic: "%"
+                    - paragraph: 默认 92
+                  - generic:
+                    - generic: 接入公共电网容量（最大下网功率）
+                    - generic:
+                      - textbox: "80000"
+                      - generic: kW
+                    - paragraph: 受电变压器容量×功率因数
+                  - generic:
+                    - generic: 平均负荷率
+                    - generic:
+                      - textbox: "50"
+                      - generic: "%"
+                    - paragraph: 按省份 110kV 及以上工商业两部制平均水平，电网公司定期核定
+                  - generic:
+                    - generic: 自发自用占总可用发电量比例下限
+                    - generic:
+                      - textbox: "60"
+                      - generic: "%"
+                    - paragraph: 1192 号文要求 ≥ 60
+                  - generic:
+                    - generic: 自发自用占总用电量比例下限
+                    - generic:
+                      - textbox: "30"
+                      - generic: "%"
+                    - paragraph: ≥ 30，2030 年起 ≥ 35
+                  - generic:
+                    - generic: 余电上网比例上限
+                    - generic:
+                      - textbox: "20"
+                      - generic: "%"
+                    - paragraph: 一般不高于 20
+                  - generic:
+                    - generic: 余电最大上网功率
+                    - generic:
+                      - textbox: "8000"
+                      - generic: kW
+                  - generic:
+                    - generic: 弃电率上限
+                    - generic:
+                      - textbox: "20"
+                      - generic: "%"
+        - generic:
+          - generic:
+            - heading [level=3]: 计算控制
+            - paragraph: 启动优化计算并查看任务状态（点击“计算”先进行参数校验）
+          - generic:
+            - generic:
+              - button: 计算
+              - generic: 未开始
+            - paragraph: 参数确认无误后，点击“计算”按钮启动优化算法（遗传算法求解）。
+            - paragraph: 提示：参数校验通过后进入计算；结果口径为全生命周期平均电价（未含容需量电费），计算结果仅供参考。
+        - generic:
+          - generic:
+            - generic:
+              - heading [level=3]: 计算结果
+              - paragraph: 点击上方“计算”按钮后，将在此展示优化结果
+            - generic:
+              - button [disabled]: 结果预览
+              - button [disabled]: 下载计算结果
+          - generic: 完成计算后显示详细结果
+      - contentinfo: 绿电直连新能源优化配置软件 V2.2 · 算法符合发改能源〔2025〕650 号、发改价格〔2025〕1192 号 · 技术支持 1410789590@qq.com
+  - dialog [ref=f1e192]:
+    - generic [ref=f1e193]:
+      - heading "模板预览：inputtemplate_ldzl_3.0.xlsx" [level=2] [ref=f1e194]
+      - paragraph [ref=f1e198]: 技术参数、经济评价参数等静态数据
+    - generic [ref=f1e199]:
+      - tablist [ref=f1e200]:
+        - tab "input_ldzl3 33 行" [selected] [ref=f1e201]:
+          - text: input_ldzl3
+          - generic [ref=f1e202]: 33 行
+      - tabpanel "input_ldzl3 33 行" [ref=f1e203]:
+        - table [ref=f1e206]:
+          - rowgroup [ref=f1e207]:
+            - row [ref=f1e208]:
+              - columnheader "#" [ref=f1e209]
+              - columnheader "项目" [ref=f1e210]
+              - columnheader "数值" [ref=f1e211]
+              - columnheader "单位" [ref=f1e212]
+              - columnheader "备注" [ref=f1e213]
+          - rowgroup [ref=f1e214]:
+            - row [ref=f1e215]:
+              - cell "2" [ref=f1e216]
+              - cell "储能充放电深度" [ref=f1e217]
+              - cell "85" [ref=f1e218]
+              - cell "%" [ref=f1e219]
+              - cell [ref=f1e220]
+            - row [ref=f1e221]:
+              - cell "3" [ref=f1e222]
+              - cell "电池充放电倍率" [ref=f1e223]
+              - cell "0.5" [ref=f1e224]
+              - cell [ref=f1e225]
+              - cell [ref=f1e226]
+            - row [ref=f1e227]:
+              - cell "4" [ref=f1e228]
+              - cell "储能初始电量" [ref=f1e229]
+              - cell "20" [ref=f1e230]
+              - cell "%" [ref=f1e231]
+              - cell [ref=f1e232]
+            - row [ref=f1e233]:
+              - cell "5" [ref=f1e234]
+              - cell "储能系统充电效率" [ref=f1e235]
+              - cell "93" [ref=f1e236]
+              - cell "%" [ref=f1e237]
+              - cell [ref=f1e238]
+            - row [ref=f1e239]:
+              - cell "6" [ref=f1e240]
+              - cell "储能系统放电效率" [ref=f1e241]
+              - cell "92" [ref=f1e242]
+              - cell "%" [ref=f1e243]
+              - cell [ref=f1e244]
+            - row [ref=f1e245]:
+              - cell "7" [ref=f1e246]
+              - cell "接入公共电网容量（最大下网功率）" [ref=f1e247]
+              - cell "80000" [ref=f1e248]
+              - cell "kW" [ref=f1e249]
+              - cell "为项目同时使用的受电变压器容量乘以功率因数后的有功功率。" [ref=f1e250]
+            - row [ref=f1e251]:
+              - cell "8" [ref=f1e252]
+              - cell "平均负荷率" [ref=f1e253]
+              - cell "50" [ref=f1e254]
+              - cell "%" [ref=f1e255]
+              - cell "按所在省份110千伏及以上工商业两部制用户平均水平执行" [ref=f1e256]
+            - row [ref=f1e257]:
+              - cell "9" [ref=f1e258]
+              - cell "自发自用占总可用发电量比例下限" [ref=f1e259]
+              - cell "60" [ref=f1e260]
+              - cell "%" [ref=f1e261]
+              - cell "1192号文规定的下限是60%" [ref=f1e262]
+            - row [ref=f1e263]:
+              - cell "10" [ref=f1e264]
+              - cell "自发自用占总用电量比例下限" [ref=f1e265]
+              - cell "30" [ref=f1e266]
+              - cell "%" [ref=f1e267]
+              - cell "1192号文规定不低于30%、2030年起新增项目不低于35%" [ref=f1e268]
+            - row [ref=f1e269]:
+              - cell "11" [ref=f1e270]
+              - cell "余电上网比例上限" [ref=f1e271]
+              - cell "20" [ref=f1e272]
+              - cell "%" [ref=f1e273]
+              - cell "一般不高于20%，详见各地方具体规定" [ref=f1e274]
+            - row [ref=f1e275]:
+              - cell "12" [ref=f1e276]
+              - cell "余电最大上网功率" [ref=f1e277]
+              - cell "80000" [ref=f1e278]
+              - cell "kW" [ref=f1e279]
+              - cell "电网公司核定的上网发电容量" [ref=f1e280]
+            - row [ref=f1e281]:
+              - cell "13" [ref=f1e282]
+              - cell "弃电率上限" [ref=f1e283]
+              - cell "20" [ref=f1e284]
+              - cell "%" [ref=f1e285]
+              - cell "目前无规定，可自行设定，无要求取100%" [ref=f1e286]
+            - row [ref=f1e287]:
+              - cell "14" [ref=f1e288]
+              - cell "风电系统单位投资" [ref=f1e289]
+              - cell "3600" [ref=f1e290]
+              - cell "元/kW" [ref=f1e291]
+              - cell [ref=f1e292]
+            - row [ref=f1e293]:
+              - cell "15" [ref=f1e294]
+              - cell "光伏系统单位投资" [ref=f1e295]
+              - cell "2700" [ref=f1e296]
+              - cell "元/kW" [ref=f1e297]
+              - cell [ref=f1e298]
+            - row [ref=f1e299]:
+              - cell "16" [ref=f1e300]
+              - cell "储能系统单位投资" [ref=f1e301]
+              - cell "600" [ref=f1e302]
+              - cell "元/kWh" [ref=f1e303]
+              - cell [ref=f1e304]
+            - row [ref=f1e305]:
+              - cell "17" [ref=f1e306]
+              - cell "年运维费用占比" [ref=f1e307]
+              - cell "1" [ref=f1e308]
+              - cell "%" [ref=f1e309]
+              - cell [ref=f1e310]
+            - row [ref=f1e311]:
+              - cell "18" [ref=f1e312]
+              - cell "人员工资" [ref=f1e313]
+              - cell "10" [ref=f1e314]
+              - cell "万元/人年" [ref=f1e315]
+              - cell [ref=f1e316]
+            - row [ref=f1e317]:
+              - cell "19" [ref=f1e318]
+              - cell "定员人数" [ref=f1e319]
+              - cell "10" [ref=f1e320]
+              - cell "人" [ref=f1e321]
+              - cell [ref=f1e322]
+            - row [ref=f1e323]:
+              - cell "20" [ref=f1e324]
+              - cell "折现率" [ref=f1e325]
+              - cell "3" [ref=f1e326]
+              - cell "%" [ref=f1e327]
+              - cell [ref=f1e328]
+            - row [ref=f1e329]:
+              - cell "21" [ref=f1e330]
+              - cell "评价周期" [ref=f1e331]
+              - cell "15" [ref=f1e332]
+              - cell "年" [ref=f1e333]
+              - cell [ref=f1e334]
+            - row [ref=f1e335]:
+              - cell "22" [ref=f1e336]
+              - cell "其他固定投资" [ref=f1e337]
+              - cell "1500" [ref=f1e338]
+              - cell "万元" [ref=f1e339]
+              - cell [ref=f1e340]
+            - row [ref=f1e341]:
+              - cell "23" [ref=f1e342]
+              - cell "电池更换单价" [ref=f1e343]
+              - cell "400" [ref=f1e344]
+              - cell "元/kWh" [ref=f1e345]
+              - cell [ref=f1e346]
+            - row [ref=f1e347]:
+              - cell "24" [ref=f1e348]
+              - cell "电池更换比例" [ref=f1e349]
+              - cell "100" [ref=f1e350]
+              - cell "%" [ref=f1e351]
+              - cell [ref=f1e352]
+            - row [ref=f1e353]:
+              - cell "25" [ref=f1e354]
+              - cell "电池更换时间" [ref=f1e355]
+              - cell "8" [ref=f1e356]
+              - cell "年底" [ref=f1e357]
+              - cell [ref=f1e358]
+            - row [ref=f1e359]:
+              - cell "26" [ref=f1e360]
+              - cell "选定风电规模起始值" [ref=f1e361]
+              - cell "1" [ref=f1e362]
+              - cell "MW" [ref=f1e363]
+              - cell [ref=f1e364]
+            - row [ref=f1e365]:
+              - cell "27" [ref=f1e366]
+              - cell "选定风电规模结束值" [ref=f1e367]
+              - cell "500" [ref=f1e368]
+              - cell "MW" [ref=f1e369]
+              - cell [ref=f1e370]
+            - row [ref=f1e371]:
+              - cell "28" [ref=f1e372]
+              - cell "选定光伏规模起始值" [ref=f1e373]
+              - cell "1" [ref=f1e374]
+              - cell "MW" [ref=f1e375]
+              - cell [ref=f1e376]
+            - row [ref=f1e377]:
+              - cell "29" [ref=f1e378]
+              - cell "选定光伏规模结束值" [ref=f1e379]
+              - cell "500" [ref=f1e380]
+              - cell "MW" [ref=f1e381]
+              - cell [ref=f1e382]
+            - row [ref=f1e383]:
+              - cell "30" [ref=f1e384]
+              - cell "选定储能容量起始值" [ref=f1e385]
+              - cell "1" [ref=f1e386]
+              - cell "MWh" [ref=f1e387]
+              - cell [ref=f1e388]
+            - row [ref=f1e389]:
+              - cell "31" [ref=f1e390]
+              - cell "选定储能容量结束值" [ref=f1e391]
+              - cell "500" [ref=f1e392]
+              - cell "MWh" [ref=f1e393]
+              - cell [ref=f1e394]
+            - row [ref=f1e395]:
+              - cell "32" [ref=f1e396]
+              - cell "总评估次数" [ref=f1e397]
+              - cell "100" [ref=f1e398]
+              - cell [ref=f1e399]
+              - cell [ref=f1e400]
+            - row [ref=f1e401]:
+              - cell "33" [ref=f1e402]
+              - cell "初始随机采样点数" [ref=f1e403]
+              - cell "20" [ref=f1e404]
+              - cell [ref=f1e405]
+              - cell [ref=f1e406]
+    - button "关闭" [active] [ref=f1e407]

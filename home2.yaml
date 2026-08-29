@@ -1,0 +1,151 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e10]:
+        - generic [ref=f1e11]:
+          - heading "绿电直连新能源优化配置软件" [level=1] [ref=f1e12]
+          - generic [ref=f1e13]: V2.2
+        - paragraph [ref=f1e14]: 风电 · 光伏 · 储能最优容量配置计算
+      - button "文件管理" [ref=f1e16]
+  - main [ref=f1e17]:
+    - generic [ref=f1e18]:
+      - generic [ref=f1e19]:
+        - heading "数据准备与上传" [level=3] [ref=f1e20]
+        - paragraph [ref=f1e24]: 下载模板并填写，通过上传文件一次性导入参数与全年 8760h 时序数据
+      - generic [ref=f1e25]:
+        - generic [ref=f1e26]:
+          - generic [ref=f1e27]: 风电
+          - generic [ref=f1e33]: →
+          - generic [ref=f1e34]: 光伏
+          - generic [ref=f1e42]: →
+          - generic [ref=f1e43]: 储能
+          - generic [ref=f1e47]: →
+          - generic [ref=f1e48]: 数据中心
+          - generic [ref=f1e54]: →
+          - generic [ref=f1e55]: 电网
+        - generic [ref=f1e59]:
+          - generic [ref=f1e60]: 模板文件下载
+          - generic [ref=f1e64]:
+            - generic [ref=f1e65]:
+              - button "输入文件模板：inputtemplate_ldzl_3.0.xlsx" [ref=f1e66]
+              - button "预览模板" [active] [ref=f1e68]
+            - generic [ref=f1e69]:
+              - button "曲线及分时电价模板：curvetemplate_ldzl_3.0.xlsx" [ref=f1e70]
+              - button "预览模板" [ref=f1e72]
+        - generic [ref=f1e73]:
+          - generic [ref=f1e74]:
+            - generic [ref=f1e75]:
+              - generic [ref=f1e76]: 上传输入文件
+              - generic [ref=f1e77]: 可选
+            - paragraph [ref=f1e78]: 可上传技术参数、经济评价参数等静态数据；也可直接在下方表单中填写
+            - button "Choose File" [ref=f1e80] [cursor=pointer]
+            - paragraph [ref=f1e81]: 未选择文件
+          - generic [ref=f1e82]:
+            - generic [ref=f1e83]:
+              - generic [ref=f1e84]: 上传发电及负荷曲线
+              - generic [ref=f1e85]: 必选
+            - paragraph [ref=f1e86]: 必填全年 8760h 负荷、风光标幺值、分时电价及过网费四项费用时序数据
+            - button "Choose File" [ref=f1e88] [cursor=pointer]
+            - paragraph [ref=f1e89]: 未选择文件
+    - generic [ref=f1e90]:
+      - generic [ref=f1e91]:
+        - heading "参数输入与确认" [level=3] [ref=f1e92]
+        - paragraph [ref=f1e96]: 上传文件后自动读取参数；界面修改将覆盖上传值；“储能时段 / 输配电费方案 / 优化目标”仅在界面操作
+      - generic [ref=f1e98]:
+        - tablist [ref=f1e99]:
+          - tab "技术参数" [selected] [ref=f1e100]
+          - tab "经济评价参数" [ref=f1e101]
+          - tab "择优范围与算法" [ref=f1e102]
+          - tab "储能时段" [ref=f1e103]
+          - tab "方案与目标" [ref=f1e104]
+        - tabpanel "技术参数" [ref=f1e105]:
+          - generic [ref=f1e106]:
+            - generic [ref=f1e107]:
+              - generic [ref=f1e108]: 储能充放电深度
+              - generic [ref=f1e109]:
+                - textbox "储能充放电深度" [ref=f1e110]: "80"
+                - generic: "%"
+              - paragraph [ref=f1e111]: 建议 80~90（磷酸铁锂）/80（三元锂）
+            - generic [ref=f1e112]:
+              - generic [ref=f1e113]: 电池充放电倍率
+              - generic [ref=f1e114]:
+                - textbox "电池充放电倍率" [ref=f1e115]: "0.5"
+                - generic: C
+            - generic [ref=f1e116]:
+              - generic [ref=f1e117]: 储能初始电量
+              - generic [ref=f1e118]:
+                - textbox "储能初始电量" [ref=f1e119]: "20"
+                - generic: "%"
+              - paragraph [ref=f1e120]: 与充放电深度之和 ≥ 100
+            - generic [ref=f1e121]:
+              - generic [ref=f1e122]: 储能充电效率
+              - generic [ref=f1e123]:
+                - textbox "储能充电效率" [ref=f1e124]: "93"
+                - generic: "%"
+              - paragraph [ref=f1e125]: 默认 93
+            - generic [ref=f1e126]:
+              - generic [ref=f1e127]: 储能放电效率
+              - generic [ref=f1e128]:
+                - textbox "储能放电效率" [ref=f1e129]: "92"
+                - generic: "%"
+              - paragraph [ref=f1e130]: 默认 92
+            - generic [ref=f1e131]:
+              - generic [ref=f1e132]: 接入公共电网容量（最大下网功率）
+              - generic [ref=f1e133]:
+                - textbox "接入公共电网容量（最大下网功率）" [ref=f1e134]: "80000"
+                - generic: kW
+              - paragraph [ref=f1e135]: 受电变压器容量×功率因数
+            - generic [ref=f1e136]:
+              - generic [ref=f1e137]: 平均负荷率
+              - generic [ref=f1e138]:
+                - textbox "平均负荷率" [ref=f1e139]: "50"
+                - generic: "%"
+              - paragraph [ref=f1e140]: 按省份 110kV 及以上工商业两部制平均水平，电网公司定期核定
+            - generic [ref=f1e141]:
+              - generic [ref=f1e142]: 自发自用占总可用发电量比例下限
+              - generic [ref=f1e143]:
+                - textbox "自发自用占总可用发电量比例下限" [ref=f1e144]: "60"
+                - generic: "%"
+              - paragraph [ref=f1e145]: 1192 号文要求 ≥ 60
+            - generic [ref=f1e146]:
+              - generic [ref=f1e147]: 自发自用占总用电量比例下限
+              - generic [ref=f1e148]:
+                - textbox "自发自用占总用电量比例下限" [ref=f1e149]: "30"
+                - generic: "%"
+              - paragraph [ref=f1e150]: ≥ 30，2030 年起 ≥ 35
+            - generic [ref=f1e151]:
+              - generic [ref=f1e152]: 余电上网比例上限
+              - generic [ref=f1e153]:
+                - textbox "余电上网比例上限" [ref=f1e154]: "20"
+                - generic: "%"
+              - paragraph [ref=f1e155]: 一般不高于 20
+            - generic [ref=f1e156]:
+              - generic [ref=f1e157]: 余电最大上网功率
+              - generic [ref=f1e158]:
+                - textbox "余电最大上网功率" [ref=f1e159]: "8000"
+                - generic: kW
+            - generic [ref=f1e160]:
+              - generic [ref=f1e161]: 弃电率上限
+              - generic [ref=f1e162]:
+                - textbox "弃电率上限" [ref=f1e163]: "20"
+                - generic: "%"
+    - generic [ref=f1e164]:
+      - generic [ref=f1e165]:
+        - heading "计算控制" [level=3] [ref=f1e166]
+        - paragraph [ref=f1e169]: 启动优化计算并查看任务状态（点击“计算”先进行参数校验）
+      - generic [ref=f1e170]:
+        - generic [ref=f1e171]:
+          - button "计算" [ref=f1e172]
+          - generic [ref=f1e173]: 未开始
+        - paragraph [ref=f1e174]: 参数确认无误后，点击“计算”按钮启动优化算法（遗传算法求解）。
+        - paragraph [ref=f1e175]: 提示：参数校验通过后进入计算；结果口径为全生命周期平均电价（未含容需量电费），计算结果仅供参考。
+    - generic [ref=f1e176]:
+      - generic [ref=f1e177]:
+        - generic [ref=f1e178]:
+          - heading "计算结果" [level=3] [ref=f1e179]
+          - paragraph [ref=f1e183]: 点击上方“计算”按钮后，将在此展示优化结果
+        - generic [ref=f1e184]:
+          - button "结果预览" [disabled]
+          - button "下载计算结果" [disabled]
+      - generic [ref=f1e185]: 完成计算后显示详细结果
+  - contentinfo [ref=f1e190]: 绿电直连新能源优化配置软件 V2.2 · 算法符合发改能源〔2025〕650 号、发改价格〔2025〕1192 号 · 技术支持 1410789590@qq.com

@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  vue-demi: true
+minimumReleaseAgeExclude:
+  - '@lucide/vue@1.37.0'
+  - happy-dom@20.11.15
