@@ -1,50 +1,217 @@
-name: Build Desktop Apps
+name: Release Desktop Apps
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发（只构建并上传产物，不发布 Release）
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+  TAG_NAME: ${{ gitea.ref_name }}
 
 jobs:
-  build:
-    permissions:
-      contents: write
+  # ------------------------------------------------------------------
+  # 1. 创建草稿 Release（非 tag 触发时跳过创建，job 本身仍执行，
+  #    这样下游无需依赖 needs.*.result == 'skipped' 这类兼容性写法）
+  # ------------------------------------------------------------------
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+      upload_url: ${{ steps.create.outputs.upload_url }}
+    steps:
+      - name: Create draft release
+        id: create
+        if: startsWith(gitea.ref, 'refs/tags/')
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          TAG="${TAG_NAME}"
+
+          if [ -z "${GITEA_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.GITEA_TOKEN（需要有仓库写权限的 Gitea 访问令牌）"
+            exit 1
+          fi
+
+          # 已存在同名 tag 的 Release 则复用（便于重跑失败的流水线）
+          EXISTING=$(curl -sS -H "Authorization: token ${GITEA_TOKEN}" \
+            "${API}/releases/tags/${TAG}" | jq -r '.id // empty')
+
+          if [ -n "${EXISTING}" ]; then
+            RELEASE_ID="${EXISTING}"
+            echo "复用已存在的 Release #${RELEASE_ID}"
+          else
+            RELEASE_ID=$(curl -sSf -X POST "${API}/releases" \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"draft\":true,\"prerelease\":false,\"body\":\"自动构建产物：Linux / Windows / macOS / Android / iOS\"}" \
+              | jq -r '.id')
+            echo "已创建草稿 Release #${RELEASE_ID}"
+          fi
+
+          echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
+          echo "upload_url=${API}/releases/${RELEASE_ID}/assets" >> "$GITHUB_OUTPUT"
+
+  # ------------------------------------------------------------------
+  # 2. 前端只构建一次（含 vue-tsc 类型检查），产物供所有平台复用
+  #    参考 HuLaSpark/HuLa 的 prepare-frontend 做法
+  # ------------------------------------------------------------------
+  prepare-frontend:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------- Frontend: pnpm ----------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      # ---------- Rust ----------
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # 3. 全平台矩阵构建：桌面端 + 移动端，共用同一套步骤
+  #    每个矩阵项通过 platform 字段控制各自的环境依赖与构建命令
+  #    （矩阵分类思路参考 readest/readest 的 build-tauri job）
+  # ------------------------------------------------------------------
+  build-desktop:
+    needs: [create-release, prepare-frontend]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      NDK_VERSION: 27.2.12479018
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---------------- 桌面端 ----------------
+          - name: linux-x64
+            os: ubuntu-latest
+            platform: desktop
+            rust_targets: x86_64-unknown-linux-gnu
+            build_cmd: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+
+          - name: windows-x64
+            os: windows-latest
+            platform: desktop
+            rust_targets: x86_64-pc-windows-msvc
+            build_cmd: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+
+          - name: macos-universal
+            os: macos-latest
+            platform: desktop
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build_cmd: pnpm tauri build --target universal-apple-darwin --bundles app,dmg --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.tar.gz
+
+          # ---------------- 移动端：Android ----------------
+          # 一次构建产出全部 ABI 的 APK（--split-per-abi），避免每个 ABI 跑一个 job
+          - name: android
+            os: ubuntu-latest
+            platform: android
+            rust_targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+            build_cmd: pnpm tauri android build --apk --split-per-abi --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+              src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+
+          # ---------------- 移动端：iOS ----------------
+          # 需要带 Xcode 16+ 的 macOS runner（tauri ios init 生成 objectVersion 77 工程）
+          # 无 Apple 签名证书时只做无签名编译检查，不阻塞发布
+          - name: ios-aarch64
+            os: macos-latest
+            platform: ios
+            rust_targets: aarch64-apple-ios,aarch64-apple-ios-sim
+            build_cmd: pnpm tauri ios build --no-sign --target aarch64 --config release-tauri-config.json
+            if_no_files: warn
+            paths: |
+              src-tauri/gen/apple/dist/*.tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Setup JDK 17
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.name }}
 
-      # ---------- Linux system deps (Tauri v2) ----------
+      # ---------------- 各平台系统依赖 ----------------
       - name: Install Linux dependencies
+        if: matrix.platform == 'desktop' && matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             file \
@@ -53,172 +220,227 @@ jobs:
             curl \
             wget
 
-      # ---------- Build ----------
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Tauri app
-        run: |
-          pnpm tauri build \
-            --target x86_64-unknown-linux-gnu \
-            --bundles appimage,deb,rpm
-        shell: bash
-
-      # ---------- Upload artifacts ----------
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64
-          path: |
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
-
-      # ---------- Release (tag push only) ----------
-      - name: Publish release
-        if: startsWith(gitea.ref, 'refs/tags/')
-        uses: akkuman/gitea-release-action@v1
+      # MSI 需要 WiX Toolset v3；安装失败时 tauri-bundler 会自行下载，故允许失败
+      - name: Install WiX Toolset v3 (for MSI)
+        if: matrix.platform == 'desktop' && matrix.os == 'windows-latest'
+        run: choco install wixtoolset -y --no-progress
         continue-on-error: true
-        env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-        with:
-          files: |
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
-
-  # ---------- Windows x64 (交叉编译，独立 job，失败不影响 Linux 产物) ----------
-  build-windows:
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          key: windows-xwin
-
-      - name: Install cross-compile toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm lld nsis
-          cargo install cargo-xwin
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Tauri app (Windows x64 NSIS)
-        run: |
-          pnpm tauri build \
-            --runner cargo-xwin \
-            --target x86_64-pc-windows-msvc \
-            --bundles nsis
-        shell: bash
-
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-
-      - name: Publish release
-        if: startsWith(gitea.ref, 'refs/tags/')
-        uses: akkuman/gitea-release-action@v1
-        continue-on-error: true
-        env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-        with:
-          files: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-
-  # ---------- Android APK (交叉构建，独立 job) ----------
-  build-android:
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    env:
-      NDK_VERSION: 27.2.12479018
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          key: android
 
       - name: Install NDK
+        if: matrix.platform == 'android'
         run: |
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "ndk;${NDK_VERSION}"
 
-      - name: Install frontend dependencies
+      - name: Select the newest available Xcode
+        if: matrix.platform == 'ios'
+        run: |
+          set -euo pipefail
+          newest="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "::error::未在该 runner 上找到 Xcode"
+            exit 1
+          fi
+          sudo xcode-select -s "$newest/Contents/Developer"
+          version="$(xcodebuild -version | head -1 | awk '{print $2}')"
+          if [ "${version%%.*}" -lt 16 ]; then
+            echo "::error::Xcode $version 过旧，生成的工程需要 Xcode 16+"
+            exit 1
+          fi
+          echo "::notice::Using Xcode $version"
+          xcodebuild -version
+
+      # ---------------- 前端产物复用 ----------------
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-dist
+
+      - name: Restore dist
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          # upload-artifact@v4 在只上传单个目录时会去掉目录前缀，这里两种情况都兼容
+          if [ -d frontend-dist/dist ]; then
+            mv frontend-dist/dist dist
+          else
+            mv frontend-dist dist
+          fi
+          test -f dist/index.html
+
+      # 前端已构建完成，禁止 tauri 再跑一遍 beforeBuildCommand
+      - name: Disable frontend rebuild
+        run: |
+          cat > release-tauri-config.json <<'EOF'
+          {
+            "build": {
+              "beforeBuildCommand": ""
+            }
+          }
+          EOF
+
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # ---------------- 生成移动端工程 ----------------
       - name: Init Android project
+        if: matrix.platform == 'android'
         run: pnpm tauri android init
 
-      - name: Build APK (aarch64)
-        run: pnpm tauri android build --apk --target aarch64
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${NDK_VERSION}
+      # iOS 缺少 Xcode / macOS runner 时不应让整个流水线失败
+      - name: Init iOS project
+        if: matrix.platform == 'ios'
+        continue-on-error: true
+        run: pnpm tauri ios init
 
-      - name: Upload Android artifacts
+      # ---------------- Android 签名配置 ----------------
+      # secrets 不能写在 step 级 if 里，先探测再输出（参考 opengeos/GeoLibre）
+      - name: Check Android signing secrets
+        if: matrix.platform == 'android'
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置完整的 Android 签名密钥，将产出未签名 APK"
+          fi
+
+      # Tauri 生成的 gradle 会从 gen/android/keystore.properties 读取签名信息
+      - name: Write keystore.properties
+        if: matrix.platform == 'android' && steps.keystore.outputs.present == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/gen/android
+          base64 -d <<< "${KEYSTORE_BASE64}" > "${RUNNER_TEMP}/keystore.jks"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=${RUNNER_TEMP}/keystore.jks
+          password=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          EOF
+
+      # ---------------- 构建 ----------------
+      - name: Build ${{ matrix.name }}
+        if: matrix.platform != 'ios'
+        run: ${{ matrix.build_cmd }}
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+
+      # iOS 无签名证书时仅做编译检查，失败只告警
+      - name: Build ${{ matrix.name }} (compile check, no signing)
+        if: matrix.platform == 'ios'
+        continue-on-error: true
+        run: ${{ matrix.build_cmd }}
+
+      # Google Play 需要 AAB；Rust 产物已缓存，这里主要是 Gradle 重新打包
+      - name: Build Android AAB
+        if: matrix.platform == 'android' && steps.keystore.outputs.present == 'true'
+        run: pnpm tauri android build --aab --config release-tauri-config.json
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+
+      # ---------------- 目录型产物打包 ----------------
+      # macOS .app 是目录，产物上传不支持目录，打成 tar.gz
+      - name: Archive macOS app bundle
+        if: matrix.name == 'macos-universal'
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/universal-apple-darwin/release/bundle/macos
+          tar -czf "directopt-desktop_${TAG_NAME}_universal.app.tar.gz" *.app
+
+      # iOS 产物同样是 .app 目录；构建被跳过时这里只告警
+      - name: Archive iOS app bundle
+        if: matrix.platform == 'ios'
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/gen/apple/dist
+          APP=$(find src-tauri/gen/apple/build -maxdepth 2 -type d -name '*.app' | head -n 1)
+          if [ -z "${APP}" ]; then
+            echo "::warning::未找到 iOS 构建产物 (.app)，跳过打包"
+            exit 0
+          fi
+          tar -czf "src-tauri/gen/apple/dist/directopt-desktop_${TAG_NAME}_ios_aarch64.app.tar.gz" \
+            -C "$(dirname "${APP}")" "$(basename "${APP}")"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-arm64
-          path: gen/android/app/build/outputs/apk/**/*.apk
+          name: pkg-${{ matrix.name }}
+          path: ${{ matrix.paths }}
+          if-no-files-found: ${{ matrix.if_no_files }}
 
-      - name: Publish release
-        if: startsWith(gitea.ref, 'refs/tags/')
-        uses: akkuman/gitea-release-action@v1
-        continue-on-error: true
+  # ------------------------------------------------------------------
+  # 4. 汇总所有平台产物 -> 上传到草稿 Release -> 幂等发布
+  # ------------------------------------------------------------------
+  publish-release:
+    needs: [create-release, build-desktop]
+    if: startsWith(gitea.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd assets
+          find . -maxdepth 1 -type f ! -name 'checksums.txt' -printf '%f\n' | sort | xargs -r sha256sum > checksums.txt
+          cat checksums.txt
+
+      - name: Upload assets to release
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-        with:
-          files: gen/android/app/build/outputs/apk/**/*.apk
+          UPLOAD_URL: ${{ needs.create-release.outputs.upload_url }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(assets/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::没有找到任何待上传的产物"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "上传 $(basename "$f")"
+            curl -sSf -X POST "${UPLOAD_URL}" \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -F "name=$(basename "$f")" \
+              -F "attachment=@${f}" > /dev/null
+          done
+
+      # 先按 tag 查询再 PATCH，重复运行时幂等（参考 HuLaSpark/HuLa）
+      - name: Publish release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          TAG="${TAG_NAME}"
+          RELEASE=$(curl -sS -H "Authorization: token ${GITEA_TOKEN}" "${API}/releases/tags/${TAG}" || true)
+          ID=$(echo "${RELEASE}" | jq -r '.id // empty')
+          if [ -z "${ID}" ]; then
+            echo "::error::未找到 tag ${TAG} 对应的 Release"
+            exit 1
+          fi
+          if [ "$(echo "${RELEASE}" | jq -r '.draft')" != "true" ]; then
+            echo "Release ${TAG} 已发布，跳过"
+            exit 0
+          fi
+          curl -sSf -X PATCH "${API}/releases/${ID}" \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"draft":false}' > /dev/null
+          echo "Release ${TAG} 已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
