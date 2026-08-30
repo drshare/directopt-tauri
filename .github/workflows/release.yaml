@@ -83,6 +83,7 @@ jobs:
             paths: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/x86_64-pc-windows-msvc/release/*_portable.exe
 
           - name: macos-universal
             os: macos-latest
@@ -312,6 +313,16 @@ jobs:
         if: matrix.platform == 'ios'
         continue-on-error: true
         run: ${{ matrix.build_cmd }}
+
+      # Windows 绿色便携版：编译产物本身就是免安装单文件 exe，复制一份带版本号的命名
+      - name: Prepare Windows portable exe
+        if: matrix.name == 'windows-x64'
+        run: |
+          set -euo pipefail
+          SRC="src-tauri/target/x86_64-pc-windows-msvc/release/directopt-desktop.exe"
+          DST="src-tauri/target/x86_64-pc-windows-msvc/release/directopt-desktop_${TAG_NAME}_x64_portable.exe"
+          cp -f "${SRC}" "${DST}"
+          ls -lh "${DST}"
 
       # Google Play 需要 AAB；Rust 产物已缓存，这里主要是 Gradle 重新打包
       - name: Build Android AAB
