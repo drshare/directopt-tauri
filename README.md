@@ -32,8 +32,8 @@ pnpm tauri ios dev
 发布流程：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
 ### 可选 Secrets
