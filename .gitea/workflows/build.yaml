@@ -1,33 +1,64 @@
 name: Release Desktop Apps
+run-name: Release ${{ gitea.ref_name }}
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: # 允许手动触发（只构建并上传产物，不发布 Release）
+    branches:
+      - main # 推送 main 分支也触发：构建并上传产物（非 tag 不发布 Release）
+  workflow_dispatch: # 手动触发：只构建并上传产物，不发布 Release
 
 permissions:
   contents: write
 
+# Gitea 1.24+ 支持 concurrency；act 的 workflow 解析是非严格的，老版本会忽略该字段而不是报错。
+# 同一 tag / 分支重复触发时排队执行，避免两条流水线互相覆盖 Release 产物。
+concurrency:
+  group: release-${{ gitea.ref_name }}
+  cancel-in-progress: false
+
 env:
   # job 容器由 runner 通过 docker.sock 在宿主机上创建，运行在独立的
   # GITEA-ACTIONS-*-network 里，既不在 gitea_net 也访问不到容器自己的 localhost，
-  # 因此只能走宿主机 IP + 映射端口（与 runner 的 GITEA_INSTANCE_URL 一致）
-  GITEA_SERVER: http://10.0.0.5:3001
-  NODE_VERSION: "20"
+  # 因此只能走宿主机 IP + 映射端口（与 runner 的 GITEA_INSTANCE_URL 一致）。
+  # GITEA_SERVER 是全工作流访问 Gitea 的唯一地址源（checkout / API / Release 上传
+  # 全部引用它），换环境只需在 Gitea 后台配置，无需改动工作流文件：
+  #   取值优先级：仓库/组织变量 vars.GITEA_SERVER（需 Gitea >= 1.24）
+  #              > 密钥 secrets.GITEA_SERVER > 默认地址
+  GITEA_SERVER: ${{ vars.GITEA_SERVER || secrets.GITEA_SERVER || 'http://10.0.0.5:3001' }}
+  NODE_VERSION: "22"
+  NDK_VERSION: 27.2.12479018
   TAG_NAME: ${{ gitea.ref_name }}
+  CARGO_TERM_COLOR: always
 
 jobs:
   # ------------------------------------------------------------------
-  # 1. 创建草稿 Release（非 tag 触发时跳过创建，job 本身仍执行，
-  #    这样下游无需依赖 needs.*.result == 'skipped' 这类兼容性写法）
+  # 1. 创建草稿 Release
+  #    非 tag 触发时 job 仍会执行（内部步骤跳过），下游无需处理
+  #    needs.*.result == 'skipped' 这类兼容性写法
   # ------------------------------------------------------------------
   create-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     outputs:
       release_id: ${{ steps.create.outputs.release_id }}
       upload_url: ${{ steps.create.outputs.upload_url }}
     steps:
+      - name: Ensure jq
+        run: |
+          set -euo pipefail
+          if command -v jq >/dev/null 2>&1; then
+            exit 0
+          fi
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq jq
+
       - name: Create draft release
         id: create
         if: startsWith(gitea.ref, 'refs/tags/')
@@ -43,73 +74,69 @@ jobs:
             exit 1
           fi
 
-          # 已存在同名 tag 的 Release 则复用（便于重跑失败的流水线）
-          EXISTING=$(curl -sS -H "Authorization: token ${GITEA_TOKEN}" \
-            "${API}/releases/tags/${TAG}" | jq -r '.id // empty')
+          # curl 统一带重试，避免 runner 侧瞬时网络抖动把整个发布打断
+          CURL=(curl -sS --retry 5 --retry-delay 3 --retry-all-errors
+                -H "Authorization: token ${GITEA_TOKEN}")
 
-          if [ -n "${EXISTING}" ]; then
-            RELEASE_ID="${EXISTING}"
-            echo "复用已存在的 Release #${RELEASE_ID}"
+          # 已存在同名 tag 的 Release 则复用（便于重跑失败的流水线）
+          RELEASE_ID=$("${CURL[@]}" "${API}/releases/tags/${TAG}" | jq -r '.id // empty')
+
+          if [ -n "${RELEASE_ID}" ]; then
+            echo "::notice::复用已存在的 Release #${RELEASE_ID}"
           else
-            RELEASE_ID=$(curl -sSf -X POST "${API}/releases" \
-              -H "Authorization: token ${GITEA_TOKEN}" \
+            RELEASE_ID=$("${CURL[@]}" -f -X POST "${API}/releases" \
               -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"draft\":true,\"prerelease\":false,\"body\":\"自动构建产物：Linux / Windows / macOS / Android / iOS\"}" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"draft\":true,\"prerelease\":false,\"body\":\"自动构建产物：Linux / Windows / macOS / Android / iOS（commit ${GITHUB_SHA}）\"}" \
               | jq -r '.id')
-            echo "已创建草稿 Release #${RELEASE_ID}"
+            echo "::notice::已创建草稿 Release #${RELEASE_ID}"
           fi
 
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
           echo "upload_url=${API}/releases/${RELEASE_ID}/assets" >> "$GITHUB_OUTPUT"
 
   # ------------------------------------------------------------------
-  # 2. 前端只构建一次（含 vue-tsc 类型检查），产物供所有平台复用
-  #    参考 HuLaSpark/HuLa 的 prepare-frontend 做法
+  # 2. 前端只做一次类型检查 + 构建校验
+  #    注意：本环境 job 容器访问不到 Gitea 的 ArtifactService
+  #    （/twirp/github.actions.results.api.v1.ArtifactService/*），upload-artifact@v4
+  #    会一直 CreateArtifact 超时，所以不再用 artifact 传递 dist，
+  #    改成每个平台 job 各自 pnpm build（每个 job 多约 1 分钟，但不依赖产物服务）
   # ------------------------------------------------------------------
-  prepare-frontend:
+  check-frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           github-server-url: ${{ env.GITEA_SERVER }}
 
-      # pnpm v11+ 必须用 pnpm/setup（action-setup 官方仅支持 v10 及以下）
-      # version 省略，从 package.json 的 packageManager 读取；一步装好 pnpm + Node.js + store 缓存
+      # runner 3.x 提供 cache service v2，官方 actions/cache 可直接用（无需 gitea-upload-artifact fork）
+      # pnpm/setup 一步装好 pnpm + Node.js，并按 pnpm-lock.yaml 缓存 store
       - name: Setup pnpm and Node.js
-        uses: pnpm/setup@v1
+        uses: pnpm/setup@v2
         with:
           runtime: node@${{ env.NODE_VERSION }}
           cache: true
-          install: false
+          require-lockfile: true # 等价于 pnpm install --frozen-lockfile，且缺 lockfile 直接失败
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+      # 只做校验，产物在 job 内构建后直接丢弃，不上传 artifact
       - name: Build frontend
         run: pnpm build
-
-      - name: Upload frontend dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: dist
-          if-no-files-found: error
 
   # ------------------------------------------------------------------
   # 3. 全平台矩阵构建：桌面端 + 移动端，共用同一套步骤
   #    每个矩阵项通过 platform 字段控制各自的环境依赖与构建命令
-  #    （矩阵分类思路参考 readest/readest 的 build-tauri job）
   # ------------------------------------------------------------------
   build-desktop:
-    needs: [create-release, prepare-frontend]
+    needs: [create-release, check-frontend]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
-    env:
-      NDK_VERSION: 27.2.12479018
     strategy:
       fail-fast: false
       matrix:
@@ -176,14 +203,12 @@ jobs:
         with:
           github-server-url: ${{ env.GITEA_SERVER }}
 
-      # pnpm v11+ 必须用 pnpm/setup（action-setup 官方仅支持 v10 及以下）
-      # version 省略，从 package.json 的 packageManager 读取；一步装好 pnpm + Node.js + store 缓存
       - name: Setup pnpm and Node.js
-        uses: pnpm/setup@v1
+        uses: pnpm/setup@v2
         with:
           runtime: node@${{ env.NODE_VERSION }}
           cache: true
-          install: false
+          require-lockfile: true
 
       - name: Setup JDK 17
         if: matrix.platform == 'android'
@@ -191,6 +216,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          cache: gradle
 
       - name: Setup Android SDK
         if: matrix.platform == 'android'
@@ -206,13 +232,17 @@ jobs:
         with:
           workspaces: src-tauri -> target
           key: ${{ matrix.name }}
+          save-if: "true"
 
       # ---------------- 各平台系统依赖 ----------------
       - name: Install Linux dependencies
         if: matrix.platform == 'desktop' && matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          set -euo pipefail
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
@@ -221,7 +251,8 @@ jobs:
             libssl-dev \
             build-essential \
             curl \
-            wget
+            wget \
+            jq
 
       # MSI 需要 WiX Toolset v3；安装失败时 tauri-bundler 会自行下载，故允许失败
       - name: Install WiX Toolset v3 (for MSI)
@@ -232,8 +263,12 @@ jobs:
       - name: Install NDK
         if: matrix.platform == 'android'
         run: |
+          set -euo pipefail
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "ndk;${NDK_VERSION}"
+          # 直接写进 GITHUB_ENV，避免依赖 env 上下文能否读到上一步写入的变量
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Select the newest available Xcode
         if: matrix.platform == 'ios'
@@ -253,26 +288,13 @@ jobs:
           echo "::notice::Using Xcode $version"
           xcodebuild -version
 
-      # ---------------- 前端产物复用 ----------------
-      - name: Download frontend dist
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend-dist
+      # ---------------- 前端构建 ----------------
+      # 不再从 artifact 恢复 dist（ArtifactService 在 job 容器里不可达），每个平台各自构建
+      - name: Build frontend
+        run: pnpm build
 
-      - name: Restore dist
-        run: |
-          set -euo pipefail
-          rm -rf dist
-          # upload-artifact@v4 在只上传单个目录时会去掉目录前缀，这里两种情况都兼容
-          if [ -d frontend-dist/dist ]; then
-            mv frontend-dist/dist dist
-          else
-            mv frontend-dist dist
-          fi
-          test -f dist/index.html
-
-      # 前端已构建完成，禁止 tauri 再跑一遍 beforeBuildCommand
+      # 前端已构建完成，禁止 tauri 再跑一遍 beforeBuildCommand。
+      # tauri CLI 的 --config 路径按当前工作目录（仓库根）解析。
       - name: Disable frontend rebuild
         run: |
           cat > release-tauri-config.json <<'EOF'
@@ -282,9 +304,6 @@ jobs:
             }
           }
           EOF
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       # ---------------- 生成移动端工程 ----------------
       - name: Init Android project
@@ -298,7 +317,7 @@ jobs:
         run: pnpm tauri ios init
 
       # ---------------- Android 签名配置 ----------------
-      # secrets 不能写在 step 级 if 里，先探测再输出（参考 opengeos/GeoLibre）
+      # secrets 不能写在 step 级 if 里，先探测再输出
       - name: Check Android signing secrets
         if: matrix.platform == 'android'
         id: keystore
@@ -336,8 +355,6 @@ jobs:
       - name: Build ${{ matrix.name }}
         if: matrix.platform != 'ios'
         run: ${{ matrix.build_cmd }}
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
 
       # iOS 无签名证书时仅做编译检查，失败只告警
       - name: Build ${{ matrix.name }} (compile check, no signing)
@@ -349,8 +366,6 @@ jobs:
       - name: Build Android AAB
         if: matrix.platform == 'android' && steps.keystore.outputs.present == 'true'
         run: pnpm tauri android build --aab --config release-tauri-config.json
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
 
       # ---------------- 目录型产物打包 ----------------
       # macOS .app 是目录，产物上传不支持目录，打成 tar.gz
@@ -375,12 +390,70 @@ jobs:
           tar -czf "src-tauri/gen/apple/dist/directopt-desktop_${TAG_NAME}_ios_aarch64.app.tar.gz" \
             -C "$(dirname "${APP}")" "$(basename "${APP}")"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: pkg-${{ matrix.name }}
-          path: ${{ matrix.paths }}
-          if-no-files-found: ${{ matrix.if_no_files }}
+      # 产物不走 actions/upload-artifact（本环境 job 容器访问不到 Gitea 的
+      # ArtifactService，CreateArtifact 会一直超时），直接上传到草稿 Release
+      - name: Upload packages to release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          UPLOAD_URL: ${{ needs.create-release.outputs.upload_url }}
+        run: |
+          set -euo pipefail
+          patterns="${RUNNER_TEMP}/patterns.txt"
+          cat > "${patterns}" <<'EOF'
+          ${{ matrix.paths }}
+          EOF
+
+          files=()
+          while IFS= read -r pat; do
+            # 不加引号，让通配符展开（matrix.paths 每行一个 glob）
+            for f in ${pat}; do
+              if [ -f "${f}" ]; then files+=("${f}"); fi
+            done
+          done < "${patterns}"
+
+          if [ ${#files[@]} -eq 0 ]; then
+            if [ "${{ matrix.if_no_files }}" = "error" ]; then
+              echo "::error::未找到 ${{ matrix.name }} 的构建产物"
+              exit 1
+            fi
+            echo "::warning::未找到 ${{ matrix.name }} 的构建产物，跳过上传"
+            exit 0
+          fi
+
+          echo "构建产物："
+          printf '  %s\n' "${files[@]}"
+
+          # 手动触发（非 tag）时没有 Release，只打印清单
+          if [ -z "${UPLOAD_URL:-}" ] || [ -z "${RELEASE_ID:-}" ]; then
+            echo "::notice::非 tag 触发，产物不上传 Release"
+            exit 0
+          fi
+          if [ -z "${GITEA_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.GITEA_TOKEN（需要有仓库写权限的 Gitea 访问令牌）"
+            exit 1
+          fi
+
+          CURL=(curl -sS --retry 5 --retry-delay 3 --retry-all-errors
+                -H "Authorization: token ${GITEA_TOKEN}")
+          API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
+
+          for f in "${files[@]}"; do
+            name="$(basename "${f}")"
+            # 重跑流水线时先删掉同名旧资产，避免 Release 里出现重复文件
+            if command -v jq >/dev/null 2>&1; then
+              old_ids=$("${CURL[@]}" "${API}/releases/${RELEASE_ID}/assets" \
+                | jq -r --arg n "${name}" '.[] | select(.name == $n) | .id')
+              for id in ${old_ids}; do
+                echo "删除同名旧资产 ${name} (#${id})"
+                "${CURL[@]}" -f -X DELETE "${API}/releases/assets/${id}" > /dev/null
+              done
+            fi
+            echo "上传 ${name}"
+            "${CURL[@]}" -f -X POST "${UPLOAD_URL}" \
+              -F "name=${name}" \
+              -F "attachment=@${f}" > /dev/null
+          done
 
   # ------------------------------------------------------------------
   # 4. 汇总所有平台产物 -> 上传到草稿 Release -> 幂等发布
@@ -389,61 +462,101 @@ jobs:
     needs: [create-release, build-desktop]
     if: startsWith(gitea.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: pkg-*
-          path: assets
-          merge-multiple: true
+      - name: Ensure jq
+        run: |
+          set -euo pipefail
+          if command -v jq >/dev/null 2>&1; then
+            exit 0
+          fi
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq jq
+
+      # 各平台 job 已把产物直接上传到 Release，这里下载回来只为生成校验和
+      - name: Download release assets
+        run: |
+          set -euo pipefail
+          API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
+          CURL=(curl -sS --retry 5 --retry-delay 3 --retry-all-errors
+                -H "Authorization: token ${GITEA_TOKEN}")
+
+          rm -rf assets && mkdir -p assets
+          "${CURL[@]}" -f "${API}/releases/${RELEASE_ID}/assets" > assets.json
+
+          jq -r '.[] | select(.name != "checksums.txt") | "\(.browser_download_url)\t\(.name)"' assets.json \
+          | while IFS=$'\t' read -r url name; do
+              echo "下载 ${name}"
+              "${CURL[@]}" -fL -o "assets/${name}" "${url}"
+            done
+
+          if [ -z "$(ls -A assets)" ]; then
+            echo "::error::Release 中没有任何待校验的产物"
+            exit 1
+          fi
+          ls -lh assets
 
       - name: Generate checksums
         run: |
           set -euo pipefail
           cd assets
-          find . -maxdepth 1 -type f ! -name 'checksums.txt' -printf '%f\n' | sort | xargs -r sha256sum > checksums.txt
+          find . -maxdepth 1 -type f -printf '%f\n' | sort | xargs -r sha256sum > checksums.txt
           cat checksums.txt
 
-      - name: Upload assets to release
+      - name: Upload checksums
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
           UPLOAD_URL: ${{ needs.create-release.outputs.upload_url }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(assets/*)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::没有找到任何待上传的产物"
-            exit 1
-          fi
-          for f in "${files[@]}"; do
-            echo "上传 $(basename "$f")"
-            curl -sSf -X POST "${UPLOAD_URL}" \
-              -H "Authorization: token ${GITEA_TOKEN}" \
-              -F "name=$(basename "$f")" \
-              -F "attachment=@${f}" > /dev/null
+          API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
+          CURL=(curl -sS --retry 5 --retry-delay 3 --retry-all-errors
+                -H "Authorization: token ${GITEA_TOKEN}")
+
+          old_ids=$("${CURL[@]}" "${API}/releases/${RELEASE_ID}/assets" \
+            | jq -r '.[] | select(.name == "checksums.txt") | .id')
+          for id in ${old_ids}; do
+            echo "删除旧的 checksums.txt (#${id})"
+            "${CURL[@]}" -f -X DELETE "${API}/releases/assets/${id}" > /dev/null
           done
 
-      # 先按 tag 查询再 PATCH，重复运行时幂等（参考 HuLaSpark/HuLa）
+          echo "上传 checksums.txt"
+          "${CURL[@]}" -f -X POST "${UPLOAD_URL}" \
+            -F "name=checksums.txt" \
+            -F "attachment=@assets/checksums.txt" > /dev/null
+
+      # 先按 tag 查询再 PATCH，重复运行时幂等
       - name: Publish release
-        env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           set -euo pipefail
           API="${GITEA_SERVER}/api/v1/repos/${GITHUB_REPOSITORY}"
           TAG="${TAG_NAME}"
-          RELEASE=$(curl -sS -H "Authorization: token ${GITEA_TOKEN}" "${API}/releases/tags/${TAG}" || true)
-          ID=$(echo "${RELEASE}" | jq -r '.id // empty')
+          CURL=(curl -sS --retry 5 --retry-delay 3 --retry-all-errors
+                -H "Authorization: token ${GITEA_TOKEN}")
+
+          ID="${RELEASE_ID}"
+          if [ -z "${ID}" ]; then
+            ID=$("${CURL[@]}" "${API}/releases/tags/${TAG}" | jq -r '.id // empty')
+          fi
           if [ -z "${ID}" ]; then
             echo "::error::未找到 tag ${TAG} 对应的 Release"
             exit 1
           fi
-          if [ "$(echo "${RELEASE}" | jq -r '.draft')" != "true" ]; then
-            echo "Release ${TAG} 已发布，跳过"
+
+          DRAFT=$("${CURL[@]}" "${API}/releases/${ID}" | jq -r '.draft')
+          if [ "${DRAFT}" != "true" ]; then
+            echo "::notice::Release ${TAG} 已发布，跳过"
             exit 0
           fi
-          curl -sSf -X PATCH "${API}/releases/${ID}" \
-            -H "Authorization: token ${GITEA_TOKEN}" \
+
+          "${CURL[@]}" -f -X PATCH "${API}/releases/${ID}" \
             -H "Content-Type: application/json" \
             -d '{"draft":false}' > /dev/null
-          echo "Release ${TAG} 已发布：${GITEA_SERVER}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          echo "::notice::Release ${TAG} 已发布：${GITEA_SERVER}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
