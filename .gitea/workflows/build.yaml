@@ -27,6 +27,20 @@ env:
   #   取值优先级：仓库/组织变量 vars.GITEA_SERVER（需 Gitea >= 1.24）
   #              > 密钥 secrets.GITEA_SERVER > 默认地址
   GITEA_SERVER: ${{ vars.GITEA_SERVER || secrets.GITEA_SERVER || 'http://10.0.0.5:3001' }}
+  # 外网访问代理：CI 需要下载依赖（npm registry / crates.io / Google Maven / NDK 等），
+  # 统一走本机 Clash HTTP 代理 10.0.0.96:7897。同样支持 vars/secrets 覆盖
+  # （CI_HTTP_PROXY / CI_NO_PROXY），未配置时用下方默认值。
+  # 注意 NO_PROXY 必须排除 Gitea 服务（10.0.0.5）与代理自身（10.0.0.96），
+  # 否则 checkout / API 调用会走代理导致失败。大小写两份都设，兼容不同工具。
+  HTTP_PROXY: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.96:7897' }}
+  HTTPS_PROXY: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.96:7897' }}
+  NO_PROXY: ${{ vars.CI_NO_PROXY || secrets.CI_NO_PROXY || 'localhost,127.0.0.1,::1,10.0.0.5,10.0.0.96' }}
+  http_proxy: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.96:7897' }}
+  https_proxy: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.96:7897' }}
+  no_proxy: ${{ vars.CI_NO_PROXY || secrets.CI_NO_PROXY || 'localhost,127.0.0.1,::1,10.0.0.5,10.0.0.96' }}
+  # JVM 工具（sdkmanager 下载 NDK、Gradle 拉依赖）不读标准代理环境变量，用系统属性兜底。
+  # 如需关闭可设 vars.CI_JAVA_TOOL_OPTIONS 为空。
+  JAVA_TOOL_OPTIONS: ${{ vars.CI_JAVA_TOOL_OPTIONS || secrets.CI_JAVA_TOOL_OPTIONS || '-Dhttp.proxyHost=10.0.0.96 -Dhttp.proxyPort=7897 -Dhttps.proxyHost=10.0.0.96 -Dhttps.proxyPort=7897 -Dhttp.nonProxyHosts=10.0.0.5|localhost|127.0.0.1|::1' }}
   NODE_VERSION: "22"
   NDK_VERSION: 27.2.12479018
   TAG_NAME: ${{ gitea.ref_name }}
