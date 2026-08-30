@@ -419,16 +419,17 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${TAG_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
           # 形如 v1.2.3-beta.1 的标签标记为预发布
           args=()
           case "${TAG}" in
             *-*) args+=(--prerelease) ;;
           esac
-          # 从仓库根目录执行 gh（artifacts/ 内无 .git，gh 无法识别仓库）
-          if gh release view "${TAG}" >/dev/null 2>&1; then
+          # release job 未 checkout 源码（无 .git），gh 命令须显式指定 --repo
+          if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
             echo "::notice::Release ${TAG} 已存在，覆盖上传产物"
-            gh release upload "${TAG}" artifacts/* --clobber
+            gh release upload "${TAG}" artifacts/* --clobber --repo "${REPO}"
           else
             echo "::notice::创建 Release ${TAG}"
-            gh release create "${TAG}" artifacts/* --title "${TAG}" --generate-notes ${args[@]+"${args[@]}"}
+            gh release create "${TAG}" artifacts/* --title "${TAG}" --generate-notes --repo "${REPO}" ${args[@]+"${args[@]}"}
           fi
