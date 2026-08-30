@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-env
@@ -43,7 +43,7 @@ jobs:
         run: pnpm build
 
       - name: Upload frontend dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: dist
@@ -119,7 +119,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-env
@@ -202,7 +202,7 @@ jobs:
       # ---------------- 前端构建 ----------------
       # 前端已由 frontend job 构建并上传，这里直接下载复用
       - name: Download frontend dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: dist-download
@@ -374,7 +374,7 @@ jobs:
           ls -lh stage || true
 
       - name: Upload ${{ matrix.name }} artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: stage/*
@@ -392,7 +392,7 @@ jobs:
         shell: bash
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
