@@ -401,6 +401,9 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
+          # 清理 frontend-dist artifact 混入的前端静态文件，只保留安装包
+          rm -f index.html tauri.svg vite.svg
+          rm -rf assets templates
           if [ -z "$(ls -A .)" ]; then
             echo "::error::没有可发布的构建产物"
             exit 1
@@ -415,17 +418,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cd artifacts
           TAG="${TAG_NAME}"
           # 形如 v1.2.3-beta.1 的标签标记为预发布
           args=()
           case "${TAG}" in
             *-*) args+=(--prerelease) ;;
           esac
+          # 从仓库根目录执行 gh（artifacts/ 内无 .git，gh 无法识别仓库）
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "::notice::Release ${TAG} 已存在，覆盖上传产物"
-            gh release upload "${TAG}" ./* --clobber
+            gh release upload "${TAG}" artifacts/* --clobber
           else
             echo "::notice::创建 Release ${TAG}"
-            gh release create "${TAG}" ./* --title "${TAG}" --generate-notes ${args[@]+"${args[@]}"}
+            gh release create "${TAG}" artifacts/* --title "${TAG}" --generate-notes ${args[@]+"${args[@]}"}
           fi
