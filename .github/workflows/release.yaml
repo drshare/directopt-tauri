@@ -1,0 +1,425 @@
+name: Release Desktop & Mobile Apps
+run-name: Release ${{ github.ref_name }}
+
+# 只打 tag 才构建全平台并发布 Release；手动触发仅构建、上传产物，不发布
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 同一 tag / 分支排队执行，避免 Release 产物互相覆盖
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '11'
+  NDK_VERSION: 27.2.12479018
+  TAG_NAME: ${{ github.ref_name }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 1. 前端只构建一次，产物共享给全部平台：矩阵里不再重复跑 vite build
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          install-rust: 'false'
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+          retention-days: 1
+          if-no-files-found: error
+
+  # 2. 全平台矩阵构建（platform 字段控制各平台依赖与构建命令）
+  build:
+    needs: [frontend]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---------------- 桌面端 ----------------
+          - name: linux-x64
+            os: ubuntu-latest
+            platform: desktop
+            rust_targets: x86_64-unknown-linux-gnu
+            build_cmd: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+
+          - name: windows-x64
+            os: windows-latest
+            platform: desktop
+            rust_targets: x86_64-pc-windows-msvc
+            build_cmd: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+
+          - name: macos-universal
+            os: macos-latest
+            platform: desktop
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build_cmd: pnpm tauri build --target universal-apple-darwin --bundles app,dmg --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.tar.gz
+
+          # ---------------- 移动端：Android ----------------
+          # 一次构建产出全部 ABI 的 APK（--split-per-abi），避免每个 ABI 跑一个 job
+          - name: android
+            os: ubuntu-latest
+            platform: android
+            rust_targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+            build_cmd: pnpm tauri android build --apk --split-per-abi --config release-tauri-config.json
+            if_no_files: error
+            paths: |
+              src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+              src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+
+          # ---------------- 移动端：iOS ----------------
+          # 需要 Xcode 16+ 的 macOS runner；无签名证书时仅编译检查，产物缺失只告警
+          - name: ios-aarch64
+            os: macos-latest
+            platform: ios
+            rust_targets: aarch64-apple-ios,aarch64-apple-ios-sim
+            build_cmd: pnpm tauri ios build --no-sign --target aarch64 --config release-tauri-config.json
+            if_no_files: warn
+            paths: |
+              src-tauri/gen/apple/dist/*.tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          rust-targets: ${{ matrix.rust_targets }}
+          rust-cache-key: ${{ matrix.name }}
+
+      - name: Setup JDK 17
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Setup Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
+      # ---------------- 各平台系统依赖 ----------------
+      - name: Install Linux dependencies
+        if: matrix.platform == 'desktop' && matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            file \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            jq
+
+      # MSI 需要 WiX Toolset v3；安装失败时 tauri-bundler 会自行下载，故允许失败
+      - name: Install WiX Toolset v3 (for MSI)
+        if: matrix.platform == 'desktop' && matrix.os == 'windows-latest'
+        run: choco install wixtoolset -y --no-progress
+        continue-on-error: true
+
+      - name: Install NDK
+        if: matrix.platform == 'android'
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;${NDK_VERSION}"
+          # 直接写进 GITHUB_ENV，避免依赖 env 上下文能否读到上一步写入的变量
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Select the newest available Xcode
+        if: matrix.platform == 'ios'
+        run: |
+          set -euo pipefail
+          newest="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "::error::未在该 runner 上找到 Xcode"
+            exit 1
+          fi
+          sudo xcode-select -s "$newest/Contents/Developer"
+          version="$(xcodebuild -version | head -1 | awk '{print $2}')"
+          if [ "${version%%.*}" -lt 16 ]; then
+            echo "::error::Xcode $version 过旧，生成的工程需要 Xcode 16+"
+            exit 1
+          fi
+          echo "::notice::Using Xcode $version"
+          xcodebuild -version
+
+      # ---------------- 前端构建 ----------------
+      # 前端已由 frontend job 构建并上传，这里直接下载复用
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist-download
+
+      # 上传时可能保留 dist/ 前缀，也可能只上传目录内容，这里两种结构都归一到 dist/
+      - name: Restore frontend dist
+        run: |
+          set -euo pipefail
+          if [ -d dist-download/dist ]; then
+            rm -rf dist
+            mv dist-download/dist dist
+            rm -rf dist-download
+          else
+            rm -rf dist
+            mv dist-download dist
+          fi
+          test -f dist/index.html
+          ls dist
+
+      # 前端已构建，禁止 tauri 再跑 beforeBuildCommand；--config 按仓库根解析
+      - name: Disable frontend rebuild
+        run: |
+          cat > release-tauri-config.json <<'EOF'
+          {
+            "build": {
+              "beforeBuildCommand": ""
+            }
+          }
+          EOF
+
+      # ---------------- 生成移动端工程 ----------------
+      - name: Init Android project
+        if: matrix.platform == 'android'
+        run: pnpm tauri android init
+
+      # iOS 缺少 Xcode / macOS runner 时不应让整个流水线失败
+      - name: Init iOS project
+        if: matrix.platform == 'ios'
+        continue-on-error: true
+        run: pnpm tauri ios init
+
+      # ---------------- 签名配置 ----------------
+      # secrets 不能写在 step 级 if 里，先探测再输出
+      - name: Check Android signing secrets
+        if: matrix.platform == 'android'
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置完整的 Android 签名密钥，将产出未签名 APK"
+          fi
+
+      # Tauri 生成的 gradle 会从 gen/android/keystore.properties 读取签名信息
+      - name: Write keystore.properties
+        if: matrix.platform == 'android' && steps.keystore.outputs.present == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/gen/android
+          base64 -d <<< "${KEYSTORE_BASE64}" > "${RUNNER_TEMP}/keystore.jks"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=${RUNNER_TEMP}/keystore.jks
+          password=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          EOF
+
+      # 未配置 Apple 证书时保持原行为：产出 ad-hoc 签名的 macOS 包
+      - name: Configure macOS signing
+        if: matrix.platform == 'desktop' && matrix.os == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERTIFICATE:-}" ] || [ -z "${APPLE_CERTIFICATE_PASSWORD:-}" ] || [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "::notice::未配置完整的 Apple 签名密钥，将产出未签名（ad-hoc）的 macOS 产物"
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE=${APPLE_CERTIFICATE}"
+            echo "APPLE_CERTIFICATE_PASSWORD=${APPLE_CERTIFICATE_PASSWORD}"
+            echo "APPLE_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY}"
+            [ -n "${APPLE_ID:-}" ] && echo "APPLE_ID=${APPLE_ID}" || true
+            [ -n "${APPLE_PASSWORD:-}" ] && echo "APPLE_PASSWORD=${APPLE_PASSWORD}" || true
+            [ -n "${APPLE_TEAM_ID:-}" ] && echo "APPLE_TEAM_ID=${APPLE_TEAM_ID}" || true
+          } >> "$GITHUB_ENV"
+          echo "::notice::已启用 macOS 签名与公证"
+
+      # ---------------- 构建 ----------------
+      - name: Build ${{ matrix.name }}
+        if: matrix.platform != 'ios'
+        run: ${{ matrix.build_cmd }}
+
+      # iOS 无签名证书时仅做编译检查，失败只告警
+      - name: Build ${{ matrix.name }} (compile check, no signing)
+        if: matrix.platform == 'ios'
+        continue-on-error: true
+        run: ${{ matrix.build_cmd }}
+
+      # Google Play 需要 AAB；Rust 产物已缓存，这里主要是 Gradle 重新打包
+      - name: Build Android AAB
+        if: matrix.platform == 'android' && steps.keystore.outputs.present == 'true'
+        run: pnpm tauri android build --aab --config release-tauri-config.json
+
+      # ---------------- 目录型产物打包 ----------------
+      # macOS .app 是目录，产物上传不支持目录，打成 tar.gz
+      - name: Archive macOS app bundle
+        if: matrix.name == 'macos-universal'
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/universal-apple-darwin/release/bundle/macos
+          tar -czf "directopt-desktop_${TAG_NAME}_universal.app.tar.gz" *.app
+
+      # iOS 产物同样是 .app 目录；构建被跳过时这里只告警
+      - name: Archive iOS app bundle
+        if: matrix.platform == 'ios'
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/gen/apple/dist
+          APP=$(find src-tauri/gen/apple/build -maxdepth 2 -type d -name '*.app' | head -n 1)
+          if [ -z "${APP}" ]; then
+            echo "::warning::未找到 iOS 构建产物 (.app)，跳过打包"
+            exit 0
+          fi
+          tar -czf "src-tauri/gen/apple/dist/directopt-desktop_${TAG_NAME}_ios_aarch64.app.tar.gz" \
+            -C "$(dirname "${APP}")" "$(basename "${APP}")"
+
+      # ---------------- 汇总产物 ----------------
+      # 统一加平台前缀后放进 stage/，避免 Release 汇总时同名文件互相覆盖
+      - name: Stage ${{ matrix.name }} artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          patterns="${RUNNER_TEMP}/patterns.txt"
+          cat > "${patterns}" <<'EOF'
+          ${{ matrix.paths }}
+          EOF
+          found=0
+          while IFS= read -r pat; do
+            [ -z "${pat}" ] && continue
+            # 用 find 匹配：-path 的 * 可跨目录，规避 shell 通配符对 ** 的支持差异
+            while IFS= read -r f; do
+              [ -n "${f}" ] || continue
+              cp -f "${f}" "stage/${{ matrix.name }}-$(basename "${f}")"
+              found=$((found + 1))
+            done < <(find . -type f -path "./${pat}" -print)
+          done < "${patterns}"
+          if [ "${found}" -eq 0 ]; then
+            if [ "${{ matrix.if_no_files }}" = "error" ]; then
+              echo "::error::未找到 ${{ matrix.name }} 的构建产物"
+              exit 1
+            fi
+            echo "::warning::未找到 ${{ matrix.name }} 的构建产物，跳过上传"
+          fi
+          ls -lh stage || true
+
+      - name: Upload ${{ matrix.name }} artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: stage/*
+          retention-days: 7
+          if-no-files-found: warn
+
+  # 3. 汇总产物 -> 生成校验和 -> 发布 Release（仅 tag 触发）
+  release:
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          if [ -z "$(ls -A .)" ]; then
+            echo "::error::没有可发布的构建产物"
+            exit 1
+          fi
+          ls -lh
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > checksums.txt
+          cat checksums.txt
+
+      # 幂等发布：Release 不存在则创建（自动生成 release notes），已存在则覆盖上传产物
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          TAG="${TAG_NAME}"
+          # 形如 v1.2.3-beta.1 的标签标记为预发布
+          args=()
+          case "${TAG}" in
+            *-*) args+=(--prerelease) ;;
+          esac
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::notice::Release ${TAG} 已存在，覆盖上传产物"
+            gh release upload "${TAG}" ./* --clobber
+          else
+            echo "::notice::创建 Release ${TAG}"
+            gh release create "${TAG}" ./* --title "${TAG}" --generate-notes ${args[@]+"${args[@]}"}
+          fi

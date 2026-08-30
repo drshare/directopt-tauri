@@ -1,0 +1,65 @@
+name: Setup build environment
+description: 安装 pnpm / Node.js 依赖，可选安装 Rust 工具链并启用缓存（CI 与 Release 共用）
+
+inputs:
+  node-version:
+    description: Node.js 版本
+    required: false
+    default: '22'
+  pnpm-version:
+    description: pnpm 大版本（需与 pnpm-lock.yaml 的 lockfileVersion 匹配）
+    required: false
+    default: '11'
+  install-node:
+    description: 是否安装前端依赖
+    required: false
+    default: 'true'
+  install-rust:
+    description: 是否安装 Rust 工具链
+    required: false
+    default: 'true'
+  rust-targets:
+    description: 额外安装的 Rust target，逗号分隔（如 aarch64-apple-darwin,x86_64-apple-darwin）
+    required: false
+    default: ''
+  rust-cache-key:
+    description: Rust 缓存的附加 key（一般传矩阵名称，避免各平台互相覆盖）
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      if: ${{ inputs.install-node == 'true' }}
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+        run_install: false
+
+    - name: Setup Node.js
+      if: ${{ inputs.install-node == 'true' }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+
+    - name: Install dependencies
+      if: ${{ inputs.install-node == 'true' }}
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Install Rust toolchain
+      if: ${{ inputs.install-rust == 'true' }}
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.rust-targets }}
+
+    # 只在 main / tag 上回写缓存：PR 只读取，避免缓存被频繁覆盖
+    - name: Rust cache
+      if: ${{ inputs.install-rust == 'true' }}
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri -> target
+        key: ${{ inputs.rust-cache-key }}
+        save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
