@@ -13,10 +13,13 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "preserve",
-    "baseUrl": ".",
+    /* TypeScript 6 起 baseUrl 弃用，paths 可相对 tsconfig 自身解析 */
     "paths": {
       "@/*": ["./src/*"]
     },
+
+    /* Node 类型：测试与构建脚本使用 node:fs / node:path / __dirname 等 */
+    "types": ["node"],
 
     /* Linting */
     "strict": true,

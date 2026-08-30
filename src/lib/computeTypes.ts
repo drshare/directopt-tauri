@@ -108,6 +108,15 @@ export interface ComputeParamsOut {
     batteryReplaceRatio: number;
     batteryReplaceYear: number;
   };
+  /** 寻优算法："bo" 贝叶斯优化（V3.0 默认） | "ga" 遗传算法（V2.2 口径） */
+  algorithm: "bo" | "ga";
+  /** 贝叶斯优化参数（algorithm="bo" 时生效，对应 V3.0 界面「算法参数」区） */
+  bo: {
+    /** 总评估次数 */
+    nIter: number;
+    /** 初始随机采样点数 */
+    nInit: number;
+  };
   ga: {
     generations: number;
     crossoverRate: number;
@@ -144,7 +153,10 @@ function num(v: string | number, fallback = 0): number {
   return Number.isFinite(n) && String(v).trim() !== "" ? n : fallback;
 }
 
-/** 由全局参数表单组装后端 ComputeParams（含 GA 参数与择优范围，单位 MW/MWh） */
+/**
+ * 由全局参数表单组装后端 ComputeParams
+ * 含寻优算法选择、算法参数与择优范围（范围单位 MW/MWh）
+ */
 export function buildComputeParams(): ComputeParamsOut {
   return {
     tech: {
@@ -174,6 +186,11 @@ export function buildComputeParams(): ComputeParamsOut {
       batteryReplaceUnit: num(params.batteryReplaceUnit),
       batteryReplaceRatio: num(params.batteryReplaceRatio, 100),
       batteryReplaceYear: num(params.batteryReplaceYear, 8),
+    },
+    algorithm: params.algorithm,
+    bo: {
+      nIter: Math.max(3, Math.round(num(params.nIter, 100))),
+      nInit: Math.max(2, Math.round(num(params.nInit, 20))),
     },
     ga: {
       generations: Math.max(1, Math.round(num(params.generations, 40))),

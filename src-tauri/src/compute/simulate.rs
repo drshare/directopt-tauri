@@ -72,7 +72,6 @@ pub struct Series {
 pub struct SimContext<'a> {
     pub wind_kw: f64,
     pub pv_kw: f64,
-    pub ess_kwh: f64,
     pub ess_kw: f64,
     pub soc_min: f64,
     pub soc_max: f64,
@@ -136,7 +135,6 @@ impl<'a> SimContext<'a> {
         Self {
             wind_kw,
             pv_kw,
-            ess_kwh,
             ess_kw: ess_kwh * tech.rate,
             soc_min,
             soc_max,

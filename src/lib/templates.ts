@@ -22,8 +22,6 @@ export const CURVE_TEMPLATE: TemplateMeta = {
   description: "全年 8760h 负荷、风光标幺值、分时电价及过网费时序数据",
 };
 
-export const TEMPLATES: readonly TemplateMeta[] = [INPUT_TEMPLATE, CURVE_TEMPLATE];
-
 /** 预览时最多展示的行数（曲线模板有 8000+ 行，仅预览头部即可） */
 const PREVIEW_MAX_ROWS = 100;
 

@@ -33,13 +33,21 @@ export const params = reactive({
   batteryReplaceRatio: "100", // 电池更换比例 %
   batteryReplaceYear: "8", // 电池更换时间 年末
 
-  // ---- 择优范围与遗传算法（DR-1.3 / AR-3.3）----
+  // ---- 择优范围（DR-1.3）----
   windStart: "0",
   windEnd: "200",
   pvStart: "0",
   pvEnd: "200",
   essStart: "0",
   essEnd: "300",
+
+  // ---- 寻优算法（V3.0 默认贝叶斯优化，可选 V2.2 遗传算法）----
+  algorithm: "bo" as "bo" | "ga",
+  // 贝叶斯优化参数（V3.0 界面「算法参数」区，与 inputtemplate 的
+  // 「总评估次数」「初始随机采样点数」一一对应）
+  nIter: "100",
+  nInit: "20",
+  // 遗传算法参数（V2.2 说明书口径，仅 algorithm="ga" 时生效）
   generations: "40",
   crossoverRate: "0.5",
   mutationRate: "0.3",
@@ -130,11 +138,22 @@ export function validateParams(): ParamIssue[] {
     issues.push({ field: "initialSoc", label: "储能初始电量", message: "储能初始电量 + 充放电深度 ≥ 100%" });
   }
 
-  // GA 概率 0~1
-  const cross = num(params.crossoverRate);
-  const mut = num(params.mutationRate);
-  if (cross < 0 || cross > 1) issues.push({ field: "crossoverRate", label: "交叉概率", message: "交叉概率需在 0~1 之间" });
-  if (mut < 0 || mut > 1) issues.push({ field: "mutationRate", label: "变异概率", message: "变异概率需在 0~1 之间" });
+  // 按所选算法校验对应参数（另一套参数不参与校验）
+  if (params.algorithm === "ga") {
+    // GA 概率 0~1
+    const cross = num(params.crossoverRate);
+    const mut = num(params.mutationRate);
+    if (cross < 0 || cross > 1) issues.push({ field: "crossoverRate", label: "交叉概率", message: "交叉概率需在 0~1 之间" });
+    if (mut < 0 || mut > 1) issues.push({ field: "mutationRate", label: "变异概率", message: "变异概率需在 0~1 之间" });
+    if (num(params.populationSize) < 4) issues.push({ field: "populationSize", label: "种群大小", message: "种群大小不能小于 4" });
+    if (num(params.generations) < 1) issues.push({ field: "generations", label: "遗传代数", message: "遗传代数不能小于 1" });
+  } else {
+    // 贝叶斯优化（V3.0 默认）
+    const nInit = num(params.nInit);
+    const nIter = num(params.nIter);
+    if (nInit < 2) issues.push({ field: "nInit", label: "初始随机采样点数", message: "初始随机采样点数不能小于 2" });
+    if (nIter <= nInit) issues.push({ field: "nIter", label: "总评估次数", message: "总评估次数必须大于初始随机采样点数" });
+  }
 
   // 择优范围 起 ≤ 止
   const rangePairs: Array<[keyof typeof params, keyof typeof params, string]> = [

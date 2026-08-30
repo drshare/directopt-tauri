@@ -4,3 +4,6 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@lucide/vue@1.37.0'
   - happy-dom@20.11.15
+# 本机安全策略禁止遍历符号链接（os error 448），改用 npm 式扁平布局 + 复制导入
+nodeLinker: hoisted
+packageImportMethod: copy

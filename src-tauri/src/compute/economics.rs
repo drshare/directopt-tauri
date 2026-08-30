@@ -27,10 +27,6 @@ pub struct EconResult {
     pub feed_revenue: f64,
     /// 展示口径年运行成本 = 购电 + 自发自用输配 + 运维 + 工资 元
     pub annual_cost_display: f64,
-    /// 计入式(3) 的年运行成本 = 展示口径 − 余电上网收益 元（AR-1.1：扣除余电上网收益）
-    pub oc: f64,
-    /// 绿电口径年运行成本（不含网电购电成本）元
-    pub oc_green: f64,
     /// 电池更换成本现值 OC_x/(1+r)^x 元
     pub replace_cost_pv: f64,
     /// 全生命周期总成本现值 TC 元
@@ -41,8 +37,6 @@ pub struct EconResult {
     pub p_green: f64,
     /// 网电电价 元/kWh（年购电成本 / 年下网电量）
     pub p_grid: f64,
-    /// 年金现值系数 Σ 1/(1+r)^t
-    pub annuity: f64,
 }
 
 /// 计算经济性指标
@@ -88,9 +82,10 @@ pub fn compute_economics(
     let feed_revenue = t.feed_revenue;
 
     let annual_cost_display = grid_buy_cost + self_use_cost + maint + salary_cost;
-    let oc = annual_cost_display - feed_revenue;
-    // 绿电口径：不计入网电购电成本
+    // 绿电口径年运行成本（不含网电购电成本）
     let oc_green = self_use_cost + maint + salary_cost - feed_revenue;
+    // 计入式(3) 的年运行成本（AR-1.1：扣除余电上网收益）
+    let oc = annual_cost_display - feed_revenue;
 
     // ---- 折现（式 1/3/4）----
     let r = (econ.discount_rate / 100.0).max(1e-9);
@@ -127,14 +122,11 @@ pub fn compute_economics(
         self_use_cost,
         feed_revenue,
         annual_cost_display,
-        oc,
-        oc_green,
         replace_cost_pv,
         tc,
         p_composite,
         p_green,
         p_grid,
-        annuity,
     }
 }
 
@@ -151,11 +143,24 @@ pub struct ConstraintStatus {
     pub curtail_ratio: f64,
     /// 违反的约束说明（空 = 全部满足）
     pub violations: Vec<String>,
+    /// 各项比例约束的超出量之和（比例单位，0.02 表示累计超出 2 个百分点）
+    ///
+    /// 供约束贝叶斯优化建模"违反程度"——仅有布尔可行标志时，
+    /// 优化器无法感知"离可行边界还有多远"，在可行域稀疏时（实测
+    /// 择优范围 1~500 时可行域仅约 19%）几乎必然收敛到不可行区。
+    pub total_excess: f64,
+    /// 缺供电量占负荷比例（比例单位）
+    pub unserved_ratio: f64,
 }
 
 impl ConstraintStatus {
     pub fn ok(&self) -> bool {
         self.violations.is_empty()
+    }
+
+    /// 违反量标量：0 表示全部满足，越大表示违反越严重
+    pub fn violation_amount(&self) -> f64 {
+        self.total_excess + self.unserved_ratio
     }
 }
 
@@ -172,16 +177,22 @@ pub fn check_constraints(t: &Totals, tech_self_use_gen_min: f64, tech_self_use_l
     let curtail_ratio = t.curtailed / total_gen * 100.0;
 
     let mut violations = Vec::new();
+    // 各项超出量（比例单位，累计用于约束贝叶斯优化的违反程度建模）
+    let mut total_excess = 0.0f64;
     if self_use_gen_ratio + 1e-6 < tech_self_use_gen_min {
+        total_excess += (tech_self_use_gen_min - self_use_gen_ratio) / 100.0;
         violations.push("自发自用占总可用发电量比例不足".to_string());
     }
     if self_use_load_ratio + 1e-6 < tech_self_use_load_min {
+        total_excess += (tech_self_use_load_min - self_use_load_ratio) / 100.0;
         violations.push("自发自用占总用电量比例不足".to_string());
     }
     if feed_ratio - 1e-6 > tech_feed_limit {
+        total_excess += (feed_ratio - tech_feed_limit) / 100.0;
         violations.push("余电上网比例超标".to_string());
     }
     if curtail_ratio - 1e-6 > tech_curtail_limit {
+        total_excess += (curtail_ratio - tech_curtail_limit) / 100.0;
         violations.push("弃电率超标".to_string());
     }
     if t.unserved > 1e-6 {
@@ -194,34 +205,66 @@ pub fn check_constraints(t: &Totals, tech_self_use_gen_min: f64, tech_self_use_l
         feed_ratio,
         curtail_ratio,
         violations,
+        total_excess,
+        unserved_ratio: t.unserved / load,
     }
 }
 
-/// 适应度（目标函数 + 约束罚项），取值越小越优
-pub fn fitness(
-    econ: &EconResult,
-    cons: &ConstraintStatus,
-    t: &Totals,
-    objective: &str,
-) -> f64 {
-    let base = match objective {
+/// 不可行方案展示罚值（固定哨兵值）
+///
+/// 依据：V3.0 实测敏感性分析表——不满足约束的方案适应度恒为 0.98
+/// （如风电 +15%/+20%/+25% 三行因弃电率超标，适应度均为 0.98），
+/// 与可行方案的 0.23x 量级形成明显区分。
+pub const INFEASIBLE_FITNESS: f64 = 0.98;
+
+/// 目标函数原始值（不含罚项）
+pub fn objective_value(econ: &EconResult, objective: &str) -> f64 {
+    match objective {
         "green" => econ.p_green,
         "capex" => econ.ic / 10_000.0, // 万元
         _ => econ.p_composite,         // composite
-    };
+    }
+}
 
+/// 展示口径适应度：与 V3.0 敏感性分析表口径一致
+///
+/// - 满足全部约束 → 目标函数值（综合电价 / 绿电电价 / 初投资万元）
+/// - 不满足约束   → 固定 0.98
+pub fn fitness_visible(econ: &EconResult, cons: &ConstraintStatus, objective: &str) -> f64 {
+    let base = objective_value(econ, objective);
+    if !base.is_finite() || !cons.ok() {
+        return INFEASIBLE_FITNESS;
+    }
+    base
+}
+
+/// 寻优口径适应度（目标函数 + 约束罚项），取值越小越优
+///
+/// 与展示口径的差异：不可行解不使用固定 0.98，而是叠加违反量，
+/// 使优化器在不可行区内仍能识别"违反得多还是少"，避免采集函数
+/// 在 0.98 常数平台上失去搜索方向（capex 目标下 0.98 甚至会小于
+/// 可行解量级，导致不可行解被误判为更优）。
+pub fn fitness_search(econ: &EconResult, cons: &ConstraintStatus, objective: &str) -> f64 {
+    let base = objective_value(econ, objective);
     if !base.is_finite() {
         return f64::INFINITY;
     }
-
-    // 罚项：按相对违反量加权，保证不可行解适应度显著劣于可行解
-    let mut penalty = 0.0;
-    for v in &cons.violations {
-        penalty += if v.contains("缺供") {
-            (t.unserved / t.load.max(1e-9)) * 1000.0
-        } else {
-            2.0
-        };
+    if cons.ok() {
+        return base;
     }
-    base + penalty
+
+    // 罚值叠加在目标值之上（而非取常数平台），使不可行区仍保留目标函数的
+    // 地形信息——代理模型需要在不可行区感知"往哪个方向走会变好"，
+    // 若不可行区是常数平台，采集函数将失去搜索方向。
+    //
+    // 价格类目标量级 0.2~0.6 元/kWh，固定抬升 1.0 即足以严格劣于任何可行解；
+    // 初投资目标量级可达数万元，固定抬升需按量级缩放，否则罚项可忽略不计。
+    let scale = if objective == "capex" {
+        base.abs().max(1.0)
+    } else {
+        1.0
+    };
+    let lift = 1.0 + cons.violation_amount();
+    base + lift * scale
 }
+

@@ -1,4 +1,4 @@
-import { reactive, readonly } from "vue";
+import { reactive } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "@/lib/templates";
 import {
@@ -37,8 +37,6 @@ export const computation = reactive<ComputationState>({
   startedAt: 0,
   cancelRequested: false,
 });
-
-export const computationState = readonly(computation);
 
 export interface MetricItem {
   label: string;
@@ -115,6 +113,69 @@ export function restoreResult(bundle: ResultBundle): void {
 }
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// ---- 计算阶段分类（与《本项目计算引擎详细计算过程》章节一一对应）----
+
+interface ProgressView {
+  stage: string;
+  message: string;
+  detail?: string;
+}
+
+/** 后端进度消息 → 日志阶段 / 精炼文案 / 阶段详情（文档章节引用） */
+function classifyProgress(raw: string): ProgressView {
+  // GA 逐代进度：「遗传算法进化中：第 x/N 代，当前最优目标值 v（目标）」
+  const m = /遗传算法进化中：第 (\d+)\/(\d+) 代，当前最优目标值 ([\d.]+)/.exec(raw);
+  if (m) {
+    const gen = Number(m[1]);
+    const total = Number(m[2]);
+    const fit = Number(m[3]);
+    // 里程碑代次输出算法要素详情（文档 §四）
+    let detail: string | undefined;
+    if (gen === 1 || gen % 10 === 0 || gen === total) {
+      detail = jsonDetail({
+        文档章节: "§四 遗传算法寻优（ga.rs）",
+        编码: "实数向量 [风电kW, 光伏kW, 储能kWh]，边界=择优范围",
+        选择: "锦标赛 k=3",
+        交叉: "SBX 模拟二进制交叉 η=15",
+        变异: "高斯扰动 σ=0.1×区间宽度",
+        精英保留: 2,
+        随机种子: "固定（相同参数结果可复现）",
+        当前进度: `${gen}/${total} 代`,
+      });
+    }
+    return {
+      stage: "GA 寻优",
+      message: `第 ${gen}/${total} 代 · 当前最优目标值 ${fit}`,
+      detail,
+    };
+  }
+  if (raw.includes("正在初始化仿真引擎")) {
+    return {
+      stage: "仿真初始化",
+      message: "初始化仿真引擎：预计算理论发电量与全年余电上网预算（文档 §3.1）",
+    };
+  }
+  if (raw.includes("已找到最优配置")) {
+    return {
+      stage: "最优方案仿真",
+      message: "GA 寻优完成，对最优配置执行 8760h 逐时仿真（调度策略见文档 §3.1）",
+    };
+  }
+  if (raw.includes("正在生成敏感性分析")) {
+    return {
+      stage: "敏感性分析",
+      message: "敏感性分析：3 组 × 11 档（±25%~±5%、0%），固定两要素变动单一要素（文档 §五）",
+    };
+  }
+  if (raw.includes("正在汇总计算结果")) {
+    return {
+      stage: "结果汇总",
+      message: "汇总最优配置 / 投资构成 / 年运行成本 / 全年电量指标（文档 §五）",
+    };
+  }
+  return { stage: "计算进度", message: raw };
+}
 
 /** 请求取消当前计算（仅 Tauri 环境生效，后端在代间检查点安全终止） */
 export async function requestCancel(): Promise<void> {
@@ -209,18 +270,45 @@ export async function runComputation(): Promise<void> {
     }),
   );
 
+  // 单方案评估链路与寻优算法要素（对应文档 §三 / §四）
+  const isGa = paramsPayload.algorithm === "ga";
+  addLog(
+    "开始计算",
+    "info",
+    `寻优算法：${isGa ? "遗传算法（V2.2 口径）" : "贝叶斯优化（V3.0 口径）"}；单方案评估链路：8760h 仿真 → 经济性 → 约束检查 → 适应度（详见右侧《计算过程文档》§三）`,
+    jsonDetail({
+      评估链路: "每个评估点 = 8760h 仿真 → 经济性计算 → 约束检查 → 适应度",
+      适应度:
+        "展示口径：满足约束取目标值，不满足取固定 0.98（与 V3.0 敏感性表一致）；寻优口径另叠加违反量，用于区分不可行程度",
+      择优范围: {
+        风电MW: [paramsPayload.range.windStart, paramsPayload.range.windEnd],
+        光伏MW: [paramsPayload.range.pvStart, paramsPayload.range.pvEnd],
+        储能MWh: [paramsPayload.range.essStart, paramsPayload.range.essEnd],
+      },
+      寻优算法: isGa ? "遗传算法（V2.2）" : "贝叶斯优化（V3.0）",
+      算法参数: isGa ? paramsPayload.ga : paramsPayload.bo,
+      评估次数: isGa
+        ? `${paramsPayload.ga.populationSize} × (${paramsPayload.ga.generations} + 1) 次完整仿真`
+        : `${paramsPayload.bo.nIter} 次完整仿真（含 ${paramsPayload.bo.nInit} 次初始随机采样）`,
+    }),
+  );
+
   let unlisten: (() => void) | null = null;
   try {
     const { listen } = await import("@tauri-apps/api/event");
+    // 阶段起始时间标记（用于计算完成后输出各阶段耗时）
+    let prevStage = "";
+    const stageMarks: Array<{ stage: string; ts: number }> = [];
     unlisten = await listen<ProgressPayload>("compute://progress", (e) => {
       computation.status = "running";
       computation.progress = Math.max(0, Math.min(100, Math.round(e.payload.progress)));
       computation.message = e.payload.message;
-      addLog(
-        "计算进度",
-        "info",
-        `[${computation.progress}%] ${e.payload.message}`,
-      );
+      const view = classifyProgress(e.payload.message);
+      if (view.stage !== prevStage) {
+        stageMarks.push({ stage: view.stage, ts: Date.now() });
+        prevStage = view.stage;
+      }
+      addLog(view.stage, "info", `[${computation.progress}%] ${view.message}`, view.detail);
     });
 
     const payload = await invoke<ComputeResultPayload>("start_compute", {
@@ -238,14 +326,30 @@ export async function runComputation(): Promise<void> {
     computation.progress = 100;
     computation.message = "计算完成，可在下方查看结果并导出报告";
     const elapsed = ((Date.now() - computation.startedAt) / 1000).toFixed(1);
+    // 各阶段耗时（秒）
+    const stageDurations: Record<string, number> = {};
+    for (let i = 0; i < stageMarks.length; i++) {
+      const end = i + 1 < stageMarks.length ? stageMarks[i + 1].ts : Date.now();
+      stageDurations[stageMarks[i].stage] = Number(((end - stageMarks[i].ts) / 1000).toFixed(2));
+    }
+    // 约束核对（文档 §3.3，全年口径 4 项 + 缺供）
+    const hl = (label: string) => payload.headline.find((x) => x.label === label)?.value;
+    const constraintCheck = {
+      自发自用占总可用发电量: { 实际: hl("自发自用占总可用电量比例"), 要求: `≥ ${paramsPayload.tech.selfUseGenMin}%` },
+      自发自用占总用电量: { 实际: hl("自发自用占总用电量比例"), 要求: `≥ ${paramsPayload.tech.selfUseLoadMin}%` },
+      余电上网比例: { 实际: hl("余电上网比例"), 要求: `≤ ${paramsPayload.tech.feedLimit}%` },
+      弃电率: { 实际: hl("弃电率"), 要求: `≤ ${paramsPayload.tech.curtailLimit}%` },
+    };
     addLog(
       "计算完成",
       "success",
       `计算完成，耗时 ${elapsed} 秒。最优配置：风电 ${payload.best.windKw / 1000} MW / 光伏 ${payload.best.pvKw / 1000} MW / 储能 ${payload.best.essKwh / 1000} MWh`,
       jsonDetail({
         耗时秒: Number(elapsed),
+        各阶段耗时秒: stageDurations,
         最优配置: payload.best,
         适应度: payload.best.fitness,
+        约束核对_全年口径: constraintCheck,
         头部指标: payload.headline,
         投资构成: payload.invest,
         年运行成本构成: payload.opex,

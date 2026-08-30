@@ -44,6 +44,10 @@ const INPUT_LABEL_KEYS: &[(&str, &str)] = &[
     ("选定光伏规模结束值", "pvEnd"),
     ("选定储能容量起始值", "essStart"),
     ("选定储能容量结束值", "essEnd"),
+    // V3.0 算法参数：贝叶斯优化口径（界面「算法参数」区仅此两项，
+    // V2.2 说明书的遗传代数 / 交叉概率 / 变异概率 / 种群大小在 V3.0 已不存在）
+    ("总评估次数", "nIter"),
+    ("初始随机采样点数", "nInit"),
 ];
 
 /// 输入文件解析结果（返回给前端用于参数回填）
@@ -162,7 +166,7 @@ pub fn parse_input_xlsx(bytes: &[u8]) -> Result<InputParsePayload, String> {
 mod tests {
     use super::*;
 
-    /// 标准输入文件模板应解析出全部 30 项标准参数
+    /// 标准输入文件模板应解析出全部 32 项标准参数（含 V3.0 算法参数）
     #[test]
     fn parses_standard_template() {
         let path = concat!(
@@ -174,14 +178,14 @@ mod tests {
 
         assert!(payload.sheet_name.to_lowercase().contains("input"));
         assert_eq!(payload.values.len(), INPUT_LABEL_KEYS.len());
-        assert_eq!(payload.applied_labels.len(), 30);
-        assert_eq!(
-            payload.skipped_labels,
-            vec!["总评估次数", "初始随机采样点数"]
-        );
+        // 「总评估次数」「初始随机采样点数」在 V3.0 已纳入映射表
+        assert_eq!(payload.applied_labels.len(), INPUT_LABEL_KEYS.len());
+        assert!(payload.skipped_labels.is_empty());
         assert_eq!(payload.values.get("dod"), Some(&85.0));
         assert_eq!(payload.values.get("windInvest"), Some(&3600.0));
         assert_eq!(payload.values.get("essEnd"), Some(&500.0));
+        assert_eq!(payload.values.get("nIter"), Some(&100.0));
+        assert_eq!(payload.values.get("nInit"), Some(&20.0));
     }
 
     /// 非标准文件应返回明确错误

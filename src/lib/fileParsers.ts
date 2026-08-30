@@ -42,6 +42,10 @@ export const INPUT_LABEL_KEYS: Record<string, string> = {
   选定光伏规模结束值: "pvEnd",
   选定储能容量起始值: "essStart",
   选定储能容量结束值: "essEnd",
+  // V3.0 算法参数：贝叶斯优化口径（界面「算法参数」区仅此两项，
+  // V2.2 说明书的遗传代数 / 交叉概率 / 变异概率 / 种群大小在 V3.0 已不存在）
+  总评估次数: "nIter",
+  初始随机采样点数: "nInit",
 };
 
 export interface InputParseResult {

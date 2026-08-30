@@ -17,3 +17,8 @@
 
 # Logs
 *.log
+
+# 本地 Cargo 镜像/代理配置（rsproxy 等），不随仓库分发
+/.cargo/
+/target_v2/
+/target_v3/

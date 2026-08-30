@@ -18,6 +18,10 @@ describe("validateParams 参数合理性校验（FR-5）", () => {
     params.batteryReplaceRatio = "100";
     params.crossoverRate = "0.5";
     params.mutationRate = "0.3";
+    // 默认贝叶斯优化（V3.0 口径）
+    params.algorithm = "bo";
+    params.nIter = "100";
+    params.nInit = "20";
     params.windStart = "0";
     params.windEnd = "200";
   });
@@ -45,8 +49,25 @@ describe("validateParams 参数合理性校验（FR-5）", () => {
     expect(issues.some((i) => i.field === "initialSoc")).toBe(true);
   });
 
-  it("GA 概率越界校验失败", () => {
+  it("贝叶斯优化：总评估次数必须大于初始采样点数", () => {
+    params.nIter = "20";
+    params.nInit = "20";
+    const issues = validateParams();
+    expect(issues.some((i) => i.field === "nIter")).toBe(true);
+  });
+
+  it("贝叶斯优化：初始随机采样点数不能小于 2", () => {
+    params.nInit = "1";
+    const issues = validateParams();
+    expect(issues.some((i) => i.field === "nInit")).toBe(true);
+  });
+
+  it("遗传算法：概率越界校验失败（且仅在该算法下校验）", () => {
+    // 贝叶斯优化口径下 GA 概率不参与校验
     params.crossoverRate = "1.5";
+    expect(validateParams().some((i) => i.field === "crossoverRate")).toBe(false);
+
+    params.algorithm = "ga";
     const issues = validateParams();
     expect(issues.some((i) => i.field === "crossoverRate")).toBe(true);
   });

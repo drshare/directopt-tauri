@@ -9,11 +9,21 @@ import {
 import { hourlyBalance } from "@/data/hourlyBalance";
 import { fullBalanceSeries } from "@/composables/useResultData";
 
-const DOCS = path.resolve(__dirname, "../../../docs");
+const DOCS_CANDIDATES = [
+  path.resolve(__dirname, "../../../docs/example"), // 夹具所在目录
+  path.resolve(__dirname, "../../../docs"),
+];
 
 function readDocBytes(name: string): ArrayBuffer {
-  const buf = readFileSync(path.join(DOCS, name));
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  for (const dir of DOCS_CANDIDATES) {
+    try {
+      const buf = readFileSync(path.join(dir, name));
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    } catch {
+      // 尝试下一个候选目录
+    }
+  }
+  throw new Error(`找不到测试夹具文件「${name}」（已搜索 ${DOCS_CANDIDATES.join(", ")}）`);
 }
 
 /** 演示结果（useComputation.demoResults）中的最优风电规模 */

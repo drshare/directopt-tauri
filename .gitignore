@@ -29,3 +29,12 @@ dist-ssr
 # 工具缓存
 .npm-cache
 .playwright-cli
+
+# 会话工作数据与临时调研产物
+.workbuddy/
+_ldzl/
+/_*
+
+# Rust 本地临时构建目录
+src-tauri/target_v2/
+src-tauri/target_v3/

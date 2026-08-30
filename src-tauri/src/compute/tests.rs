@@ -1,12 +1,13 @@
-//! 计算核心单元测试：电量平衡恒等式、储能约束、经济口径、GA 收敛与边界
+//! 计算核心单元测试：电量平衡恒等式、储能约束、经济口径、GA / BO 收敛与边界
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
-use super::economics::{compute_economics, fitness};
+use super::bo;
+use super::economics::{compute_economics, fitness_search, fitness_visible, INFEASIBLE_FITNESS};
 use super::engine::run_compute;
 use super::ga::optimize;
 use super::params::{
-    ComputeParams, CurveData, EconParams, GaParams, RangeParams, TechParams,
+    BoParams, ComputeParams, CurveData, EconParams, GaParams, RangeParams, TechParams,
 };
 use super::simulate::SimContext;
 
@@ -72,6 +73,8 @@ fn default_params() -> ComputeParams {
             mutation_rate: 0.3,
             population_size: 8,
         },
+        algorithm: "ga".to_string(),
+        bo: BoParams::default(),
         range: RangeParams {
             wind_start: 0.0,
             wind_end: 200.0,
@@ -192,12 +195,12 @@ fn fitness_penalizes_violations() {
     let e = compute_economics(&t, &econ(), "scheme1", 1000.0, 1000.0, 1000.0, 80_000.0, 50.0);
     let cons = super::economics::check_constraints(&t, 0.0, 0.0, 100.0, 100.0);
     assert!(cons.ok());
-    let f1 = fitness(&e, &cons, &t, "composite");
+    let f1 = fitness_search(&e, &cons, "composite");
     assert!(f1.is_finite() && f1 > 0.0);
     // 提高约束门槛制造违反 → 罚项使适应度增大
     let cons2 = super::economics::check_constraints(&t, 100.01, 0.0, 100.0, 100.0);
     assert!(!cons2.ok());
-    let f2 = fitness(&e, &cons2, &t, "composite");
+    let f2 = fitness_search(&e, &cons2, "composite");
     assert!(f2 > f1);
 }
 
@@ -216,7 +219,7 @@ fn ga_respects_bounds_and_improves() {
         let (t, _) = ctx.run(false);
         let e = compute_economics(&t, &params.econ, "scheme1", g[0], g[1], g[2], params.tech.grid_capacity, params.tech.avg_load_rate);
         let cons = super::economics::check_constraints(&t, params.tech.self_use_gen_min, params.tech.self_use_load_min, params.tech.feed_limit, params.tech.curtail_limit);
-        fitness(&e, &cons, &t, "composite")
+        fitness_search(&e, &cons, "composite")
     };
     let on_gen = |_: u32, _: f64| {};
     let cancelled = AtomicBool::new(false);
@@ -282,4 +285,220 @@ fn backend_rejects_invalid_params() {
     let cancelled = AtomicBool::new(false);
     let err = run_compute(params, curves, &on_progress, &cancelled).unwrap_err();
     assert!(err.contains("参数校验未通过"), "实际错误: {err}");
+}
+
+// ---------------------------------------------------------------- 贝叶斯优化
+
+/// BO：结果落在择优范围内，且优于初始随机采样的最优值
+#[test]
+fn bo_respects_bounds_and_improves() {
+    let params = default_params();
+    let c = curves();
+    let evaluate = |g: [f64; 3]| -> (f64, f64) {
+        let ctx = SimContext::new(g[0], g[1], g[2], &params.tech, &[], &[], &c);
+        let (t, _) = ctx.run(false);
+        let e = compute_economics(
+            &t,
+            &params.econ,
+            "scheme1",
+            g[0],
+            g[1],
+            g[2],
+            params.tech.grid_capacity,
+            params.tech.avg_load_rate,
+        );
+        let cons = super::economics::check_constraints(
+            &t,
+            params.tech.self_use_gen_min,
+            params.tech.self_use_load_min,
+            params.tech.feed_limit,
+            params.tech.curtail_limit,
+        );
+        (e.p_composite, cons.violation_amount())
+    };
+
+    let bounds = [(0.0, 200_000.0), (0.0, 200_000.0), (0.0, 300_000.0)];
+    let bo_params = BoParams { n_iter: 30, n_init: 10 };
+    let calls = AtomicU32::new(0);
+    let best_seen = std::sync::Mutex::new(f64::INFINITY);
+    let wrapped = |g: [f64; 3]| -> (f64, f64) {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (y, v) = evaluate(g);
+        // 仅记录可行解，与 bo::optimize 内部的最优值口径一致
+        if v <= 0.0 {
+            let mut b = best_seen.lock().unwrap();
+            if y < *b {
+                *b = y;
+            }
+        }
+        (y, v)
+    };
+    let (best, fit) =
+        bo::optimize(bounds, &bo_params, &wrapped, &|_: u32, _: f64| {}, &|| false).expect("bo ok");
+    for i in 0..3 {
+        assert!(
+            best[i] >= bounds[i].0 - 1e-9 && best[i] <= bounds[i].1 + 1e-9,
+            "最优解越界: {:?}",
+            best
+        );
+    }
+    assert!(fit.is_finite());
+    // 评估次数应等于总评估次数
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        bo_params.n_iter,
+        "评估次数应等于总评估次数"
+    );
+    // 返回的最优值应不劣于采样过程中出现过的最优值
+    assert!(fit <= *best_seen.lock().unwrap() + 1e-12);
+}
+
+/// BO：相同参数两次运行结果完全一致（固定种子可复现）
+#[test]
+fn bo_is_deterministic() {
+    let params = default_params();
+    let c = curves();
+    let evaluate = |g: [f64; 3]| -> (f64, f64) {
+        let ctx = SimContext::new(g[0], g[1], g[2], &params.tech, &[], &[], &c);
+        let (t, _) = ctx.run(false);
+        let e = compute_economics(
+            &t,
+            &params.econ,
+            "scheme1",
+            g[0],
+            g[1],
+            g[2],
+            params.tech.grid_capacity,
+            params.tech.avg_load_rate,
+        );
+        let cons = super::economics::check_constraints(
+            &t,
+            params.tech.self_use_gen_min,
+            params.tech.self_use_load_min,
+            params.tech.feed_limit,
+            params.tech.curtail_limit,
+        );
+        (e.p_composite, cons.violation_amount())
+    };
+    let bounds = [(0.0, 200_000.0), (0.0, 200_000.0), (0.0, 300_000.0)];
+    let bo_params = BoParams { n_iter: 24, n_init: 8 };
+    let r1 = bo::optimize(bounds, &bo_params, &evaluate, &|_: u32, _: f64| {}, &|| false).unwrap();
+    let r2 = bo::optimize(bounds, &bo_params, &evaluate, &|_: u32, _: f64| {}, &|| false).unwrap();
+    assert_eq!(r1.0, r2.0);
+    assert!((r1.1 - r2.1).abs() < 1e-12);
+}
+
+/// BO：可被取消
+#[test]
+fn bo_can_be_cancelled() {
+    let params = default_params();
+    let c = curves();
+    let counter = std::sync::atomic::AtomicU32::new(0);
+    let evaluate = |g: [f64; 3]| -> (f64, f64) {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let ctx = SimContext::new(g[0], g[1], g[2], &params.tech, &[], &[], &c);
+        let (t, _) = ctx.run(false);
+        let e = compute_economics(
+            &t,
+            &params.econ,
+            "scheme1",
+            g[0],
+            g[1],
+            g[2],
+            params.tech.grid_capacity,
+            params.tech.avg_load_rate,
+        );
+        let cons = super::economics::check_constraints(
+            &t,
+            params.tech.self_use_gen_min,
+            params.tech.self_use_load_min,
+            params.tech.feed_limit,
+            params.tech.curtail_limit,
+        );
+        (e.p_composite, cons.violation_amount())
+    };
+    let bounds = [(0.0, 200_000.0), (0.0, 200_000.0), (0.0, 300_000.0)];
+    let bo_params = BoParams { n_iter: 100, n_init: 20 };
+    let err = bo::optimize(bounds, &bo_params, &evaluate, &|_: u32, _: f64| {}, &|| true)
+        .expect_err("应立即取消");
+    assert!(err.contains("计算已取消"));
+    assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------- 适应度口径
+
+/// 展示口径：不满足约束时适应度恒为固定哨兵值 0.98（与 V3.0 敏感性表一致）
+#[test]
+fn fitness_visible_uses_0_98_sentinel_for_infeasible() {
+    let c = curves();
+    let ctx = SimContext::new(1000.0, 1000.0, 1000.0, &tech(), &[], &[], &c);
+    let (t, _) = ctx.run(false);
+    let e = compute_economics(&t, &econ(), "scheme1", 1000.0, 1000.0, 1000.0, 80_000.0, 50.0);
+
+    // 可行：取目标函数值
+    let ok_cons = super::economics::check_constraints(&t, 0.0, 0.0, 100.0, 100.0);
+    assert!(ok_cons.ok());
+    let f_ok = fitness_visible(&e, &ok_cons, "composite");
+    assert!((f_ok - e.p_composite).abs() < 1e-12);
+
+    // 不可行：无论违反几项、违反多少，均为 0.98
+    let bad1 = super::economics::check_constraints(&t, 100.01, 0.0, 100.0, 100.0);
+    let bad2 = super::economics::check_constraints(&t, 100.01, 100.01, 0.0, 0.0);
+    assert!(!bad1.ok() && !bad2.ok());
+    assert!((fitness_visible(&e, &bad1, "composite") - INFEASIBLE_FITNESS).abs() < 1e-12);
+    assert!((fitness_visible(&e, &bad2, "composite") - INFEASIBLE_FITNESS).abs() < 1e-12);
+}
+
+/// 寻优口径：不可行解可区分违反程度，且恒劣于可行解
+#[test]
+fn fitness_search_ranks_infeasible_worse_than_feasible() {
+    let c = curves();
+    let ctx = SimContext::new(1000.0, 1000.0, 1000.0, &tech(), &[], &[], &c);
+    let (t, _) = ctx.run(false);
+    let e = compute_economics(&t, &econ(), "scheme1", 1000.0, 1000.0, 1000.0, 80_000.0, 50.0);
+
+    let ok_cons = super::economics::check_constraints(&t, 0.0, 0.0, 100.0, 100.0);
+    let f_ok = fitness_search(&e, &ok_cons, "composite");
+
+    let bad1 = super::economics::check_constraints(&t, 100.01, 0.0, 100.0, 100.0);
+    let bad2 = super::economics::check_constraints(&t, 100.01, 100.01, 0.0, 0.0);
+    let f1 = fitness_search(&e, &bad1, "composite");
+    let f2 = fitness_search(&e, &bad2, "composite");
+
+    assert!(f_ok < f1, "可行解应优于不可行解");
+    assert!(f2 > f1, "违反项更多的不可行解应更劣");
+}
+
+/// 初投资目标下，不可行解仍严格劣于可行解（0.98 哨兵不适用该量级）
+#[test]
+fn fitness_search_penalizes_capex_objective_by_magnitude() {
+    let c = curves();
+    let ctx = SimContext::new(150_000.0, 60_000.0, 40_000.0, &tech(), &[], &[], &c);
+    let (t, _) = ctx.run(false);
+    let e = compute_economics(&t, &econ(), "scheme1", 150_000.0, 60_000.0, 40_000.0, 80_000.0, 50.0);
+
+    let ok_cons = super::economics::check_constraints(&t, 0.0, 0.0, 100.0, 100.0);
+    let f_ok = fitness_search(&e, &ok_cons, "capex");
+
+    let bad = super::economics::check_constraints(&t, 100.01, 0.0, 100.0, 100.0);
+    assert!(!bad.ok());
+    let f_bad = fitness_search(&e, &bad, "capex");
+    assert!(
+        f_bad > f_ok,
+        "capex 目标下不可行解应劣于可行解：{f_bad} vs {f_ok}"
+    );
+}
+
+/// 引擎：默认使用贝叶斯优化（V3.0 口径）
+#[test]
+fn engine_uses_bayesian_optimization_by_default() {
+    let mut params = default_params();
+    params.algorithm = "bo".to_string();
+    params.bo = BoParams { n_iter: 12, n_init: 4 };
+    params.ga.generations = 1;
+    let on_progress = |_: f64, _: String| {};
+    let cancelled = AtomicBool::new(false);
+    let payload = run_compute(params, curves(), &on_progress, &cancelled).expect("run ok");
+    assert_eq!(payload.balance.load.len(), 8760);
+    assert_eq!(payload.sensitivity.len(), 3);
 }

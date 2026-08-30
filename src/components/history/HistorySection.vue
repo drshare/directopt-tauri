@@ -106,8 +106,14 @@ function onClear() {
                 </Badge>
               </div>
               <p class="mt-1 text-xs text-muted-foreground">
-                {{ record.schemeLabel }} · {{ record.objectiveLabel }} · 遗传代数 {{ record.params.generations }} ·
-                种群 {{ record.params.populationSize }}
+                {{ record.schemeLabel }} · {{ record.objectiveLabel }} ·
+                <template v-if="record.params.algorithm === 'ga'">
+                  遗传算法 · 代数 {{ record.params.generations }} · 种群 {{ record.params.populationSize }}
+                </template>
+                <template v-else>
+                  贝叶斯优化 · 总评估 {{ record.params.nIter ?? 100 }} · 初始采样
+                  {{ record.params.nInit ?? 20 }}
+                </template>
               </p>
               <div class="mt-2 flex flex-wrap gap-2">
                 <span

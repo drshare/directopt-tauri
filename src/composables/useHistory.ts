@@ -1,4 +1,4 @@
-import { reactive, readonly } from "vue";
+import { reactive } from "vue";
 import type { ResultBundle } from "@/composables/useComputation";
 import type { LogEntry } from "@/composables/useExecutionLog";
 
@@ -63,7 +63,6 @@ function toLabel(date: Date): string {
 }
 
 export const history = reactive<HistoryRecord[]>(readStorage());
-export const historyState = readonly(history);
 
 export interface HistoryInput {
   curveFile: string;

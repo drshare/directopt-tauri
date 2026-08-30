@@ -7,11 +7,21 @@ import {
   parseInputWorkbook,
 } from "../fileParsers";
 
-const DOCS = path.resolve(__dirname, "../../../docs");
+const DOCS_CANDIDATES = [
+  path.resolve(__dirname, "../../../docs/example"), // 夹具所在目录
+  path.resolve(__dirname, "../../../docs"),
+];
 
 function readDoc(name: string): ArrayBuffer {
-  const buf = readFileSync(path.join(DOCS, name));
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  for (const dir of DOCS_CANDIDATES) {
+    try {
+      const buf = readFileSync(path.join(dir, name));
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    } catch {
+      // 尝试下一个候选目录
+    }
+  }
+  throw new Error(`找不到测试夹具文件「${name}」（已搜索 ${DOCS_CANDIDATES.join(", ")}）`);
 }
 
 describe("parseInputWorkbook（输入文件 inputtemplate_ldzl_3.0.xlsx）", () => {
@@ -21,9 +31,12 @@ describe("parseInputWorkbook（输入文件 inputtemplate_ldzl_3.0.xlsx）", () 
     expect(result.sheetName).toBe("input_ldzl3");
   });
 
-  it("识别全部 24 项技术/经济参数与 6 项择优范围", () => {
-    expect(result.appliedLabels).toHaveLength(30);
-    expect(result.skippedLabels).toEqual(["总评估次数", "初始随机采样点数"]);
+  it("识别全部 24 项技术/经济参数、6 项择优范围与 2 项 V3.0 算法参数", () => {
+    // V3.0 的「总评估次数」「初始随机采样点数」为贝叶斯优化参数，已纳入映射表
+    expect(result.appliedLabels).toHaveLength(32);
+    expect(result.skippedLabels).toEqual([]);
+    expect(result.values.nIter).toBe(100);
+    expect(result.values.nInit).toBe(20);
   });
 
   it("参数数值与模板一致", () => {

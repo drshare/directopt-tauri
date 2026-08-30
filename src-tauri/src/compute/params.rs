@@ -63,7 +63,7 @@ pub struct EconParams {
     pub battery_replace_year: f64,
 }
 
-/// 遗传算法参数（AR-3.3）
+/// 遗传算法参数（AR-3.3，对应 V2.2 说明书口径）
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GaParams {
@@ -75,6 +75,26 @@ pub struct GaParams {
     pub mutation_rate: f64,
     /// 种群大小
     pub population_size: u32,
+}
+
+/// 贝叶斯优化参数（对应 V3.0 界面「算法参数」区）
+///
+/// 实测来源：http://150.158.94.206 绿电直连新能源优化配置 V3.0
+/// 界面仅有「总评估次数」「初始随机采样点数」两项，V2.2 说明书中的
+/// 遗传代数 / 交叉概率 / 变异概率 / 种群大小 在 V3.0 已不复存在。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoParams {
+    /// 总评估次数（含初始采样点），V3.0 默认 100
+    pub n_iter: u32,
+    /// 初始随机采样点数，V3.0 默认 20
+    pub n_init: u32,
+}
+
+impl Default for BoParams {
+    fn default() -> Self {
+        Self { n_iter: 100, n_init: 20 }
+    }
 }
 
 /// 择优范围（AR-4：风电/光伏 MW，储能 MWh）
@@ -97,6 +117,12 @@ pub struct ComputeParams {
     pub econ: EconParams,
     pub ga: GaParams,
     pub range: RangeParams,
+    /// 寻优算法："bo"（贝叶斯优化，V3.0 口径，默认） | "ga"（遗传算法，V2.2 口径）
+    #[serde(default = "default_algorithm")]
+    pub algorithm: String,
+    /// 贝叶斯优化参数（algorithm = "bo" 时生效）
+    #[serde(default)]
+    pub bo: BoParams,
     /// 输配电费方案："scheme1" | "scheme2"
     pub scheme: String,
     /// 优化目标："composite" | "green" | "capex"
@@ -173,6 +199,10 @@ fn check_range(issues: &mut Vec<String>, label: &str, s: f64, e: f64) {
     }
 }
 
+fn default_algorithm() -> String {
+    "bo".to_string()
+}
+
 /// 后端权威参数校验（与前端 FR-5 规则一致并补充）
 pub fn validate_params(p: &ComputeParams) -> Result<(), String> {
     let mut issues: Vec<String> = Vec::new();
@@ -195,17 +225,31 @@ pub fn validate_params(p: &ComputeParams) -> Result<(), String> {
     if t.dod + t.initial_soc < 100.0 {
         issues.push("储能初始电量 + 充放电深度 ≥ 100%".to_string());
     }
-    if !(0.0..=1.0).contains(&p.ga.crossover_rate) {
-        issues.push("交叉概率需在 0~1 之间".to_string());
-    }
-    if !(0.0..=1.0).contains(&p.ga.mutation_rate) {
-        issues.push("变异概率需在 0~1 之间".to_string());
-    }
-    if p.ga.population_size < 4 {
-        issues.push("种群大小不能小于 4".to_string());
-    }
-    if p.ga.generations < 1 {
-        issues.push("遗传代数不能小于 1".to_string());
+    // 按所选算法校验对应参数（另一套参数不参与校验）
+    match p.algorithm.as_str() {
+        "ga" => {
+            if !(0.0..=1.0).contains(&p.ga.crossover_rate) {
+                issues.push("交叉概率需在 0~1 之间".to_string());
+            }
+            if !(0.0..=1.0).contains(&p.ga.mutation_rate) {
+                issues.push("变异概率需在 0~1 之间".to_string());
+            }
+            if p.ga.population_size < 4 {
+                issues.push("种群大小不能小于 4".to_string());
+            }
+            if p.ga.generations < 1 {
+                issues.push("遗传代数不能小于 1".to_string());
+            }
+        }
+        _ => {
+            // 贝叶斯优化（V3.0 默认）
+            if p.bo.n_init < 2 {
+                issues.push("初始随机采样点数不能小于 2".to_string());
+            }
+            if p.bo.n_iter <= p.bo.n_init {
+                issues.push("总评估次数必须大于初始随机采样点数".to_string());
+            }
+        }
     }
     check_range(&mut issues, "风电", p.range.wind_start, p.range.wind_end);
     check_range(&mut issues, "光伏", p.range.pv_start, p.range.pv_end);

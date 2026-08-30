@@ -1,6 +1,6 @@
 [package]
 name = "directopt-desktop"
-version = "0.0.1"
+version = "0.0.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -20,10 +20,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 rand = "0.8"
 rayon = "1.10"
 calamine = "0.26"
+
+[dev-dependencies]
+serde_json = "1"
 

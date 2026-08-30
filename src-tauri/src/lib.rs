@@ -8,13 +8,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
+use tauri_plugin_opener::OpenerExt;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 /// 将前端传入的模板文件（base64 编码）保存到系统下载目录，返回保存路径
 #[tauri::command]
 fn save_template_file(app: tauri::AppHandle, name: &str, data: &str) -> Result<String, String> {
@@ -42,10 +39,30 @@ fn save_template_file(app: tauri::AppHandle, name: &str, data: &str) -> Result<S
 /// 供前端回显到参数表单，确保计算参数与传入文档一致（FR-1）
 #[tauri::command]
 fn parse_input_file(data: &str) -> Result<compute::input_parse::InputParsePayload, String> {
+    log::info!("[parse_input_file] 收到输入文件解析请求（base64 长度 {}）", data.len());
     let bytes = BASE64
         .decode(data)
-        .map_err(|e| format!("输入文件数据解码失败: {e}"))?;
-    compute::input_parse::parse_input_xlsx(&bytes)
+        .map_err(|e| {
+            let msg = format!("输入文件数据解码失败: {e}");
+            log::error!("[parse_input_file] {msg}");
+            msg
+        })?;
+    match compute::input_parse::parse_input_xlsx(&bytes) {
+        Ok(payload) => {
+            log::info!(
+                "[parse_input_file] 解析成功：Sheet「{}」，参数 {} 项，应用 {} 项，跳过 {} 项",
+                payload.sheet_name,
+                payload.values.len(),
+                payload.applied_labels.len(),
+                payload.skipped_labels.len()
+            );
+            Ok(payload)
+        }
+        Err(e) => {
+            log::error!("[parse_input_file] 解析失败：{e}");
+            Err(e)
+        }
+    }
 }
 
 /// 计算进度事件负载
@@ -65,6 +82,7 @@ struct AppState {
 /// 取消正在进行的计算
 #[tauri::command]
 fn cancel_compute(state: tauri::State<AppState>) {
+    log::info!("[cancel_compute] 收到取消计算请求，将在下一个代间检查点终止");
     state.cancel.store(true, Ordering::SeqCst);
 }
 
@@ -79,10 +97,19 @@ async fn start_compute(
     params: compute::ComputeParams,
     curves: compute::CurveData,
 ) -> Result<compute::ComputeResultPayload, String> {
+    let started = std::time::Instant::now();
+    log::info!(
+        "[start_compute] 收到计算请求：目标={} 方案={} GA（代数 {} × 种群 {}）",
+        params.objective,
+        params.scheme,
+        params.ga.generations,
+        params.ga.population_size
+    );
+
     state.cancel.store(false, Ordering::SeqCst);
     let cancel = state.cancel.clone();
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let emitter = app.clone();
         let on_progress = move |progress: f64, message: String| {
             let _ = emitter.emit("compute://progress", ProgressPayload { progress, message });
@@ -90,7 +117,27 @@ async fn start_compute(
         compute::engine::run_compute(params, curves, &on_progress, &cancel)
     })
     .await
-    .map_err(|e| format!("计算任务执行失败: {e}"))?
+    .map_err(|e| {
+        let msg = format!("计算任务执行失败: {e}");
+        log::error!("[start_compute] {msg}");
+        msg
+    })?;
+
+    match &result {
+        Ok(payload) => log::info!(
+            "[start_compute] 计算成功：总耗时 {:.2}s，最优配置 风电 {:.1}kW / 光伏 {:.1}kW / 储能 {:.1}kWh，适应度 {:.6}",
+            started.elapsed().as_secs_f64(),
+            payload.best.wind_kw,
+            payload.best.pv_kw,
+            payload.best.ess_kwh,
+            payload.best.fitness
+        ),
+        Err(e) => log::warn!(
+            "[start_compute] 计算未完成（耗时 {:.2}s）：{e}",
+            started.elapsed().as_secs_f64()
+        ),
+    }
+    result
 }
 
 // ---- 数据文件仓库（文件管理 FR-10）：上传文件与结果文件的本地归档 ----
@@ -166,10 +213,15 @@ fn save_data_file(
     data: &str,
     kind: &str,
 ) -> Result<StoredFileMeta, String> {
+    log::info!("[save_data_file] 归档文件「{name}」（类别 {kind}，base64 长度 {}）", data.len());
     validate_kind(kind)?;
     let bytes = BASE64
         .decode(data)
-        .map_err(|e| format!("文件数据解码失败: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("文件数据解码失败: {e}");
+            log::error!("[save_data_file] {msg}");
+            msg
+        })?;
 
     // 仅保留文件名部分，防止路径穿越
     let file_name = std::path::Path::new(name)
@@ -190,6 +242,7 @@ fn save_data_file(
     let size = std::fs::metadata(&target)
         .map(|m| m.len())
         .unwrap_or(bytes.len() as u64);
+    log::info!("[save_data_file] 归档成功：{} → {}（{} 字节）", name, target.display(), size);
     Ok(StoredFileMeta {
         id: format!("{kind}/{stored_name}"),
         name: file_name,
@@ -287,13 +340,46 @@ fn clear_data_files(app: tauri::AppHandle, kind: Option<&str>) -> Result<(), Str
     Ok(())
 }
 
+/// 打开运行日志所在目录（系统文件管理器），返回日志目录路径
+#[tauri::command]
+fn open_log_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("获取日志目录失败: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+    app.opener()
+        .open_path(dir.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| format!("打开日志目录失败: {e}"))?;
+    log::info!("[open_log_dir] 已打开日志目录：{}", dir.display());
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                // 记录 info 及以上级别；debug 级别留给开发排查
+                .level(log::LevelFilter::Info)
+                // 文件按大小轮转且保留历史（避免覆盖丢失运行轨迹）
+                .rotation_strategy(RotationStrategy::KeepAll)
+                .max_file_size(2_000_000)
+                .targets([
+                    // 终端控制台（开发调试）
+                    Target::new(TargetKind::Stdout),
+                    // 落盘到系统日志目录（<app_log_dir>/directopt.log）
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("directopt".into()),
+                    }),
+                    // 捕获前端 console.* 输出，一并写入日志文件
+                    Target::new(TargetKind::Webview),
+                ])
+                .build(),
+        )
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            greet,
             save_template_file,
             parse_input_file,
             start_compute,
@@ -302,8 +388,13 @@ pub fn run() {
             list_data_files,
             read_data_file,
             delete_data_file,
-            clear_data_files
+            clear_data_files,
+            open_log_dir
         ])
+        .setup(|_app| {
+            log::info!("应用启动：日志系统就绪（写入文件 directopt.log）");
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

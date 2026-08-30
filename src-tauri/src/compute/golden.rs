@@ -18,7 +18,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use super::economics::{compute_economics, fitness};
+use super::economics::{compute_economics, fitness_search};
 use super::engine::{build_payload, run_compute};
 use super::params::{ComputeParams, CurveData};
 use super::simulate::SimContext;
@@ -508,6 +508,6 @@ fn golden_energy_balance_and_fitness() {
         f.params.tech.feed_limit,
         f.params.tech.curtail_limit,
     );
-    let fit = fitness(&econ, &cons, &t, "composite");
+    let fit = fitness_search(&econ, &cons, "composite");
     assert_close(fit, REAL_P_COMPOSITE, "真实最优配置的适应度");
 }

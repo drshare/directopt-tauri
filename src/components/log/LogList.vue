@@ -8,6 +8,8 @@ const props = defineProps<{
   entries: LogEntry[];
   /** 默认展开详情（历史记录回看时使用） */
   defaultOpen?: boolean;
+  /** 填满父容器高度（执行日志/文档左右分栏时使用） */
+  fill?: boolean;
 }>();
 
 const ordered = computed(() => [...props.entries].reverse());
@@ -22,6 +24,11 @@ const levelStyle: Record<LogLevel, { dot: string; label: string }> = {
 const stageStyle: Record<string, string> = {
   文件解析: "bg-emerald-50 text-emerald-700 border-emerald-200",
   开始计算: "bg-violet-50 text-violet-700 border-violet-200",
+  仿真初始化: "bg-sky-50 text-sky-700 border-sky-200",
+  "GA 寻优": "bg-indigo-50 text-indigo-700 border-indigo-200",
+  最优方案仿真: "bg-cyan-50 text-cyan-700 border-cyan-200",
+  敏感性分析: "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200",
+  结果汇总: "bg-teal-50 text-teal-700 border-teal-200",
   计算进度: "bg-sky-50 text-sky-700 border-sky-200",
   计算完成: "bg-emerald-50 text-emerald-700 border-emerald-200",
   计算失败: "bg-red-50 text-red-700 border-red-200",
@@ -34,7 +41,10 @@ function stageClass(stage: string): string {
 </script>
 
 <template>
-  <ol class="max-h-96 space-y-1 overflow-y-auto rounded-lg border bg-muted/20 p-2 font-mono text-xs">
+  <ol
+    class="space-y-1 overflow-y-auto rounded-lg border bg-muted/20 p-2 font-mono text-xs"
+    :class="props.fill ? 'h-full min-h-0' : 'max-h-96'"
+  >
     <li v-for="entry in ordered" :key="entry.seq">
       <details :open="defaultOpen && entry.detail !== undefined">
         <summary class="flex cursor-pointer list-none items-start gap-2 rounded px-1.5 py-1 hover:bg-muted/60">
