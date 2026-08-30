@@ -12,46 +12,33 @@ on:
 permissions:
   contents: write
 
-# Gitea 1.24+ 支持 concurrency；act 的 workflow 解析是非严格的，老版本会忽略该字段而不是报错。
-# 同一 tag / 分支重复触发时排队执行，避免两条流水线互相覆盖 Release 产物。
+# 同一 tag / 分支排队执行，避免 Release 产物互相覆盖
 concurrency:
   group: release-${{ gitea.ref_name }}
   cancel-in-progress: false
 
 env:
-  # job 容器由 runner 通过 docker.sock 在宿主机上创建，运行在独立的
-  # GITEA-ACTIONS-*-network 里，既不在 gitea_net 也访问不到容器自己的 localhost，
-  # 因此只能走宿主机 IP + 映射端口（与 runner 的 GITEA_INSTANCE_URL 一致）。
-  # GITEA_SERVER 是全工作流访问 Gitea 的唯一地址源（checkout / API / Release 上传
-  # 全部引用它），换环境只需在 Gitea 后台配置，无需改动工作流文件：
-  #   取值优先级：仓库/组织变量 vars.GITEA_SERVER（需 Gitea >= 1.24）
-  #              > 密钥 secrets.GITEA_SERVER > 默认地址
+  # Gitea 服务地址，checkout / API / Release 上传统一引用它
   GITEA_SERVER: ${{ vars.GITEA_SERVER || secrets.GITEA_SERVER || 'http://10.0.0.5:3001' }}
-  # 外网访问代理：CI 需要下载依赖（npm registry / crates.io / Google Maven / NDK 等），
-  # 统一走本机 Clash HTTP 代理 10.0.0.8:7890。同样支持 vars/secrets 覆盖
-  # （CI_HTTP_PROXY / CI_NO_PROXY），未配置时用下方默认值。
-  # 注意 NO_PROXY 必须排除 Gitea 服务（10.0.0.5）与代理自身（10.0.0.8），
-  # 否则 checkout / API 调用会走代理导致失败。大小写两份都设，兼容不同工具。
+  # 外网代理，NO_PROXY 需排除 Gitea 服务与代理自身；大小写两份兼容不同工具
   HTTP_PROXY: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.8:7890' }}
   HTTPS_PROXY: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.8:7890' }}
   NO_PROXY: ${{ vars.CI_NO_PROXY || secrets.CI_NO_PROXY || 'localhost,127.0.0.1,::1,10.0.0.5,10.0.0.8' }}
   http_proxy: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.8:7890' }}
   https_proxy: ${{ vars.CI_HTTP_PROXY || secrets.CI_HTTP_PROXY || 'http://10.0.0.8:7890' }}
   no_proxy: ${{ vars.CI_NO_PROXY || secrets.CI_NO_PROXY || 'localhost,127.0.0.1,::1,10.0.0.5,10.0.0.8' }}
-  # JVM 工具（sdkmanager 下载 NDK、Gradle 拉依赖）不读标准代理环境变量，用系统属性兜底。
-  # 如需关闭可设 vars.CI_JAVA_TOOL_OPTIONS 为空。
+  # JVM 代理，sdkmanager / Gradle 不读标准代理变量，需走系统属性
   JAVA_TOOL_OPTIONS: ${{ vars.CI_JAVA_TOOL_OPTIONS || secrets.CI_JAVA_TOOL_OPTIONS || '-Dhttp.proxyHost=10.0.0.8 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=10.0.0.8 -Dhttps.proxyPort=7890 -Dhttp.nonProxyHosts=10.0.0.5|10.0.0.8|localhost|127.0.0.1|::1' }}
+  # npm/pnpm 镜像源，须设在 env 才能作用于 pnpm/action-setup 自身安装
+  npm_config_registry: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://registry.npmmirror.com' }}
+  NPM_CONFIG_REGISTRY: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://registry.npmmirror.com' }}
   NODE_VERSION: "22"
   NDK_VERSION: 27.2.12479018
   TAG_NAME: ${{ gitea.ref_name }}
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ------------------------------------------------------------------
-  # 1. 创建草稿 Release
-  #    非 tag 触发时 job 仍会执行（内部步骤跳过），下游无需处理
-  #    needs.*.result == 'skipped' 这类兼容性写法
-  # ------------------------------------------------------------------
+  # 1. 创建草稿 Release（非 tag 触发时内部步骤跳过）
   create-release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -108,13 +95,7 @@ jobs:
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
           echo "upload_url=${API}/releases/${RELEASE_ID}/assets" >> "$GITHUB_OUTPUT"
 
-  # ------------------------------------------------------------------
-  # 2. 前端只做一次类型检查 + 构建校验
-  #    注意：本环境 job 容器访问不到 Gitea 的 ArtifactService
-  #    （/twirp/github.actions.results.api.v1.ArtifactService/*），upload-artifact@v4
-  #    会一直 CreateArtifact 超时，所以不再用 artifact 传递 dist，
-  #    改成每个平台 job 各自 pnpm build（每个 job 多约 1 分钟，但不依赖产物服务）
-  # ------------------------------------------------------------------
+  # 2. 前端构建校验（环境不支持 artifact，各平台 job 各自构建）
   check-frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -127,8 +108,7 @@ jobs:
         with:
           github-server-url: ${{ env.GITEA_SERVER }}
 
-      # runner 3.x 提供 cache service v2，官方 actions/cache 可直接用（无需 gitea-upload-artifact fork）
-      # pnpm/setup 一步装好 pnpm + Node.js，并按 pnpm-lock.yaml 缓存 store
+      # 装好 pnpm + Node.js，并按 pnpm-lock.yaml 缓存 store
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -145,10 +125,7 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-  # ------------------------------------------------------------------
-  # 3. 全平台矩阵构建：桌面端 + 移动端，共用同一套步骤
-  #    每个矩阵项通过 platform 字段控制各自的环境依赖与构建命令
-  # ------------------------------------------------------------------
+  # 3. 全平台矩阵构建（platform 字段控制各平台依赖与构建命令）
   build-desktop:
     needs: [create-release, check-frontend]
     runs-on: ${{ matrix.os }}
@@ -205,8 +182,7 @@ jobs:
               src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
 
           # ---------------- 移动端：iOS ----------------
-          # 需要带 Xcode 16+ 的 macOS runner（tauri ios init 生成 objectVersion 77 工程）
-          # 无 Apple 签名证书时只做无签名编译检查，不阻塞发布
+          # 需要 Xcode 16+ 的 macOS runner；无签名证书时仅编译检查
           - name: ios-aarch64
             os: macos-latest
             platform: ios
@@ -308,12 +284,10 @@ jobs:
           xcodebuild -version
 
       # ---------------- 前端构建 ----------------
-      # 不再从 artifact 恢复 dist（ArtifactService 在 job 容器里不可达），每个平台各自构建
       - name: Build frontend
         run: pnpm build
 
-      # 前端已构建完成，禁止 tauri 再跑一遍 beforeBuildCommand。
-      # tauri CLI 的 --config 路径按当前工作目录（仓库根）解析。
+      # 前端已构建，禁止 tauri 再跑 beforeBuildCommand；--config 按仓库根解析
       - name: Disable frontend rebuild
         run: |
           cat > release-tauri-config.json <<'EOF'
@@ -409,8 +383,7 @@ jobs:
           tar -czf "src-tauri/gen/apple/dist/directopt-desktop_${TAG_NAME}_ios_aarch64.app.tar.gz" \
             -C "$(dirname "${APP}")" "$(basename "${APP}")"
 
-      # 产物不走 actions/upload-artifact（本环境 job 容器访问不到 Gitea 的
-      # ArtifactService，CreateArtifact 会一直超时），直接上传到草稿 Release
+      # 产物直传草稿 Release（环境不支持 artifact）
       - name: Upload packages to release
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
@@ -474,9 +447,7 @@ jobs:
               -F "attachment=@${f}" > /dev/null
           done
 
-  # ------------------------------------------------------------------
-  # 4. 汇总所有平台产物 -> 上传到草稿 Release -> 幂等发布
-  # ------------------------------------------------------------------
+  # 4. 汇总产物 -> 上传草稿 Release -> 幂等发布
   publish-release:
     needs: [create-release, build-desktop]
     if: startsWith(gitea.ref, 'refs/tags/')
