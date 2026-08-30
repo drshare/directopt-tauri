@@ -129,6 +129,12 @@ jobs:
           rust-targets: ${{ matrix.rust_targets }}
           rust-cache-key: ${{ matrix.name }}
 
+      # Android 项目必须在 setup-java(cache: gradle) 之前初始化，
+      # 否则 setup-java 找不到 gradle 文件会直接失败
+      - name: Init Android project
+        if: matrix.platform == 'android'
+        run: pnpm tauri android init
+
       - name: Setup JDK 17
         if: matrix.platform == 'android'
         uses: actions/setup-java@v5
@@ -228,10 +234,7 @@ jobs:
           EOF
 
       # ---------------- 生成移动端工程 ----------------
-      - name: Init Android project
-        if: matrix.platform == 'android'
-        run: pnpm tauri android init
-
+      # Android 已在 setup-java 之前初始化（见上）
       # iOS 缺少 Xcode / macOS runner 时不应让整个流水线失败
       - name: Init iOS project
         if: matrix.platform == 'ios'
@@ -330,7 +333,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p src-tauri/gen/apple/dist
-          APP=$(find src-tauri/gen/apple/build -maxdepth 2 -type d -name '*.app' | head -n 1)
+          APP=""
+          if [ -d src-tauri/gen/apple/build ]; then
+            APP=$(find src-tauri/gen/apple/build -maxdepth 2 -type d -name '*.app' | head -n 1)
+          fi
           if [ -z "${APP}" ]; then
             echo "::warning::未找到 iOS 构建产物 (.app)，跳过打包"
             exit 0
