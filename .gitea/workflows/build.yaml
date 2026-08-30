@@ -129,12 +129,16 @@ jobs:
 
       # runner 3.x 提供 cache service v2，官方 actions/cache 可直接用（无需 gitea-upload-artifact fork）
       # pnpm/setup 一步装好 pnpm + Node.js，并按 pnpm-lock.yaml 缓存 store
-      - name: Setup pnpm and Node.js
-        uses: pnpm/setup@v2
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
-          runtime: node@${{ env.NODE_VERSION }}
-          cache: true
-          require-lockfile: true # 等价于 pnpm install --frozen-lockfile，且缺 lockfile 直接失败
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
 
       # 只做校验，产物在 job 内构建后直接丢弃，不上传 artifact
       - name: Build frontend
