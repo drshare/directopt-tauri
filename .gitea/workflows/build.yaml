@@ -30,8 +30,8 @@ env:
   # JVM 代理，sdkmanager / Gradle 不读标准代理变量，需走系统属性
   JAVA_TOOL_OPTIONS: ${{ vars.CI_JAVA_TOOL_OPTIONS || secrets.CI_JAVA_TOOL_OPTIONS || '-Dhttp.proxyHost=10.0.0.8 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=10.0.0.8 -Dhttps.proxyPort=7890 -Dhttp.nonProxyHosts=10.0.0.5|10.0.0.8|localhost|127.0.0.1|::1' }}
   # npm/pnpm 镜像源，须设在 env 才能作用于 pnpm/action-setup 自身安装
-  npm_config_registry: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://registry.npmmirror.com' }}
-  NPM_CONFIG_REGISTRY: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://registry.npmmirror.com' }}
+  npm_config_registry: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://mirrors.cloud.tencent.com/npm/' }}
+  NPM_CONFIG_REGISTRY: ${{ vars.CI_NPM_REGISTRY || secrets.CI_NPM_REGISTRY || 'https://mirrors.cloud.tencent.com/npm/' }}
   NODE_VERSION: "22"
   NDK_VERSION: 27.2.12479018
   TAG_NAME: ${{ gitea.ref_name }}
