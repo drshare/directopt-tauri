@@ -32,8 +32,9 @@ stages:
       - step: build@nodejs
         name: build_tauri_linux
         displayName: 'Tauri Linux 构建'
-        # 需 Node >= 20.19（Vite 8 / pnpm 11 要求）。
-        # 具体可选版本以流水线编辑器下拉列表为准，不可用时改选最接近的版本。
+        # 说明：云端镜像(ubuntu:plugin-24)本身无 Node，且 build@nodejs 插件对
+        # 非预设版本号可能静默不初始化（实测 22.12.0 时 npm: command not found）。
+        # 因此这里仅作占位，命令里统一自查自装 Node，不依赖插件初始化。
         nodeVersion: '22.12.0'
         # 构建缓存：Rust 工具链/注册表 + pnpm 包缓存，二次构建提速明显
         caches:
@@ -45,12 +46,32 @@ stages:
             set -euo pipefail
             export CI=true
 
-            # ---------- 0. 确定版本号：优先取 Tag，回退 package.json ----------
-            if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
-              TAG="$(git describe --tags --exact-match 2>/dev/null || true)"
-            else
-              TAG=""
+            # ---------- 0. 安装 Node（镜像自带无 Node / 插件可能不初始化） ----------
+            NEED_NODE_INSTALL=1
+            if command -v node >/dev/null 2>&1; then
+              MAJOR="$(node --version | sed 's/^v//' | cut -d. -f1)"
+              if [ "${MAJOR}" -ge 20 ]; then
+                NEED_NODE_INSTALL=0
+                echo "已可用 Node: $(node --version)"
+              fi
             fi
+            if [ "${NEED_NODE_INSTALL}" -eq 1 ]; then
+              NODE_VER="22.14.0"
+              echo "安装 Node v${NODE_VER} (npmmirror)..."
+              curl -fsSL --retry 3 \
+                "https://npmmirror.com/mirrors/node/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.gz" \
+                -o /tmp/node.tar.gz
+              mkdir -p /opt/node22
+              tar -xzf /tmp/node.tar.gz -C /opt/node22 --strip-components=1
+              export PATH="/opt/node22/bin:$PATH"
+              node --version
+              npm --version
+            fi
+
+            # ---------- 1. 确定版本号：优先取 Tag，回退 package.json ----------
+            # 云端为浅检出、不含 tag 引用，先补拉 tags 再判定
+            git fetch origin --tags --force > /dev/null 2>&1 || true
+            TAG="$(git describe --tags --exact-match 2>/dev/null || true)"
             if [ -z "${TAG}" ]; then
               TAG="v$(node -p "require('./package.json').version")"
               echo "未检出 Tag，回退使用 package.json 版本: ${TAG}"
@@ -58,13 +79,13 @@ stages:
             export TAG
             echo "本次构建版本: ${TAG}"
 
-            # ---------- 1. 安装依赖并构建前端 ----------
+            # ---------- 2. 安装依赖并构建前端 ----------
             npm config set registry https://registry.npmmirror.com
             npm install -g pnpm@11
             pnpm install --frozen-lockfile
             pnpm build
 
-            # ---------- 2. 安装 Rust 工具链（国内镜像加速） ----------
+            # ---------- 3. 安装 Rust 工具链（国内镜像加速） ----------
             mkdir -p "$HOME/.cargo"
             cat > "$HOME/.cargo/config.toml" <<'EOF'
             [source.crates-io]
@@ -76,7 +97,7 @@ stages:
             export PATH="$HOME/.cargo/bin:$PATH"
             rustup target add x86_64-unknown-linux-gnu
 
-            # ---------- 3. 安装 Tauri Linux 系统依赖 ----------
+            # ---------- 4. 安装 Tauri Linux 系统依赖 ----------
             if command -v apt-get >/dev/null 2>&1; then
               apt-get update -qq
               apt-get install -y -qq \
@@ -91,10 +112,10 @@ stages:
               echo "::warning::云端环境非 Debian 系，无法自动安装 webkit2gtk 等依赖；请改用自建 Linux 私有构建节点并预装依赖"
             fi
 
-            # ---------- 4. Tauri 桌面端构建（Linux x64） ----------
+            # ---------- 5. Tauri 桌面端构建（Linux x64） ----------
             pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm
 
-            # ---------- 5. 收集产物到 stage/（统一加平台前缀防重名） ----------
+            # ---------- 6. 收集产物到 stage/（统一加平台前缀防重名） ----------
             mkdir -p stage
             BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
             for dir in appimage deb rpm; do
@@ -109,7 +130,7 @@ stages:
             fi
             ls -lh stage
 
-            # ---------- 6. 发布 Gitee Release ----------
+            # ---------- 7. 发布 Gitee Release ----------
             OWNER="${GITEE_OWNER:-drshare}"
             REPO="${GITEE_REPO:-directopt-tauri}"
             if [ -z "${GITEE_TOKEN:-}" ]; then
