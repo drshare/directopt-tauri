@@ -7,3 +7,10 @@ minimumReleaseAgeExclude:
 # 本机安全策略禁止遍历符号链接（os error 448），改用 npm 式扁平布局 + 复制导入
 nodeLinker: hoisted
 packageImportMethod: copy
+# pnpm v11 把 verifyDepsBeforeRun 的默认值从「不检查」改成了 install：
+# 每次 pnpm run / pnpm exec 之前都会校验 node_modules，一旦判定过期就自动 pnpm install，
+# 而自动安装可能要求先删除 node_modules 重建，无 TTY 时无法确认 →
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY。
+# Xcode 的 Run Script 构建阶段不继承 workflow 注入的 CI=true，因此这条链路在 iOS 构建中必炸。
+# 依赖正确性已由显式 pnpm install --frozen-lockfile 保证，无需在运行前重复检查。
+verifyDepsBeforeRun: false
