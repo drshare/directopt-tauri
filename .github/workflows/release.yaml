@@ -200,9 +200,16 @@ jobs:
           # 注意：xcodebuild 在 macOS 上用 NSFileHandle 写 stdout，若用
           # `xcodebuild -version | head -1` 会把管道提前关闭，导致 xcodebuild
           # 写剩余输出时抛 NSFileHandleOperationException(Broken pipe) 直接崩溃（exit 134）。
-          # 因此先把完整输出落盘，再解析，避免管道被 head 提前关闭。
-          xcodebuild -version > "$RUNNER_TEMP/xcode_version.txt" 2>&1
-          version="$(awk 'NR==1{print $2}' "$RUNNER_TEMP/xcode_version.txt")"
+          # 因此先把完整输出落盘再解析，全程不经过管道。
+          # 只重定向 stdout（stderr 仍保留到日志），并按行首 "Xcode " 匹配而非固定取第 1 行，
+          # 避免 runner 上 xcodebuild 的告警/许可信息混入后解析到错误的行。
+          xcodebuild -version > "$RUNNER_TEMP/xcode_version.txt"
+          version="$(awk '/^Xcode /{print $2; exit}' "$RUNNER_TEMP/xcode_version.txt")"
+          if [ -z "${version:-}" ]; then
+            echo "::error::无法从 xcodebuild -version 输出中解析 Xcode 版本"
+            cat "$RUNNER_TEMP/xcode_version.txt"
+            exit 1
+          fi
           if [ "${version%%.*}" -lt 16 ]; then
             echo "::error::Xcode $version 过旧，生成的工程需要 Xcode 16+"
             exit 1
