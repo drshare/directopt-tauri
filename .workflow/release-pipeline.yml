@@ -36,11 +36,13 @@ stages:
         # 非预设版本号可能静默不初始化（实测 22.12.0 时 npm: command not found）。
         # 因此这里仅作占位，命令里统一自查自装 Node，不依赖插件初始化。
         nodeVersion: '22.12.0'
-        # 构建缓存：Rust 工具链/注册表 + pnpm 包缓存，二次构建提速明显
+        # 构建缓存：Rust 工具链/注册表 + 编译产物 + pnpm 包缓存，二次构建提速明显
+        # 注意：target 缓存体积较大，如缓存拉取/上传耗时超过重编收益，可去掉 src-tauri/target
         caches:
           - /root/.cargo
           - /root/.rustup
-          - /root/.npm
+          - /root/.local/share/pnpm/store
+          - src-tauri/target
         commands:
           - |
             set -euo pipefail
@@ -93,7 +95,14 @@ stages:
             [source.rsproxy]
             registry = "sparse+https://rsproxy.cn/index/"
             EOF
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            # rustup 默认源在国内经常超时，使用 rsproxy 分发和更新根
+            export RUSTUP_DIST_SERVER="https://rsproxy.cn"
+            export RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+            curl --proto '=https' --tlsv1.2 -sSfL \
+              https://rsproxy.cn/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
+              -o /tmp/rustup-init
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --profile minimal --default-toolchain stable
             export PATH="$HOME/.cargo/bin:$PATH"
             rustup target add x86_64-unknown-linux-gnu
 
@@ -113,6 +122,9 @@ stages:
             fi
 
             # ---------- 5. Tauri 桌面端构建（Linux x64） ----------
+            # AppImage 打包需要 linuxdeploy，Tauri 默认从 GitHub Releases 下载；
+            # Gitee 云端环境直连 GitHub 经常超时，通过 gh-proxy.org 镜像加速。
+            export TAURI_BUNDLER_TOOLS_GITHUB_MIRROR_TEMPLATE="https://gh-proxy.org/https://github.com/<owner>/<repo>/releases/download/<version>/<asset>"
             pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm
 
             # ---------- 6. 收集产物到 stage/（统一加平台前缀防重名） ----------
