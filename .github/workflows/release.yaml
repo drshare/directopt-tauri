@@ -155,7 +155,9 @@ jobs:
 
       - name: Setup Android SDK
         if: matrix.platform == 'android'
-        uses: android-actions/setup-android@v3
+        # v3 仍是 Node 20 runtime，runner 强制以 Node 24 运行并刷弃用告警；
+        # v4.0.0 的变更正是 "Migrate from Node 20 to Node 24"，另有 cmdline-tools 20.0 等更新
+        uses: android-actions/setup-android@v4
 
       # ---------------- 各平台系统依赖 ----------------
       - name: Install Linux dependencies
@@ -258,6 +260,19 @@ jobs:
 
       # ---------------- 生成移动端工程 ----------------
       # Android 已在 setup-java 之前初始化（见上）
+      # tauri ios init 内部会调用 brew 检查并安装 xcodegen（生成 .xcodeproj 所必需）。
+      # runner 镜像预置了未受信任的 aws/tap，导致每次 brew 调用都向 stderr 刷一大段
+      # tap trust 警告，淹没有效日志。这里移除该无关 tap，并预先装好 xcodegen，
+      # 让 init 不必再走 brew install —— 输出更干净，也少一个运行时不确定因素。
+      - name: Silence Homebrew tap warnings & preinstall xcodegen (iOS only)
+        if: matrix.platform == 'ios'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          brew untap aws/tap 2>/dev/null || echo "aws/tap 不存在或已移除，跳过"
+          brew install xcodegen
+          echo "xcodegen = $(command -v xcodegen || echo 'MISSING')"
+
       # iOS 缺少 Xcode / macOS runner 时不应让整个流水线失败
       - name: Init iOS project
         if: matrix.platform == 'ios'
@@ -266,9 +281,19 @@ jobs:
           set -euo pipefail
           pnpm tauri ios init
           # 回显生成的工程：init 若未产出 Xcode 工程，后续 build 必然失败，
-          # 这里提前暴露，避免把问题推迟到构建阶段才被发现
-          ls -d src-tauri/gen/apple/*.xcodeproj src-tauri/gen/apple/*.xcworkspace 2>/dev/null || \
-            echo "::warning::tauri ios init 后未找到 Xcode 工程文件"
+          # 这里提前暴露，避免把问题推迟到构建阶段才被发现。
+          #
+          # 注意：此前写成 `ls -d *.xcodeproj *.xcworkspace` 一次性判定是错的 ——
+          # 任一 glob 未匹配时 bash 会把模式原样传给 ls，ls 因文件不存在退出 2，
+          # 于是即使 .xcodeproj 已生成也会误报。且 init 阶段本就没有 .xcworkspace
+          # （它由随后的 pod install 生成），该 glob 恒定不匹配。改为分别用 compgen 判定。
+          echo "--- src-tauri/gen/apple ---"
+          ls -1 src-tauri/gen/apple 2>/dev/null || echo "(目录不存在)"
+          if compgen -G "src-tauri/gen/apple/*.xcodeproj" > /dev/null; then
+            echo "::notice::已生成 Xcode 工程: $(compgen -G 'src-tauri/gen/apple/*.xcodeproj')"
+          else
+            echo "::warning::tauri ios init 后未找到 .xcodeproj，后续构建大概率失败"
+          fi
 
       # pnpm v11 起 .npmrc 只读取 auth / registry，其余设置一律被忽略，
       # 必须放在 pnpm-workspace.yaml（或全局 ~/.config/pnpm/config.yaml）。
