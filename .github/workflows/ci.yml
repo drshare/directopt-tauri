@@ -24,8 +24,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 门禁：push 到 main 时，只有严格符合 release 格式的提交才允许触发流水线
+  # 格式要求（小写、精确匹配前缀）：`release: <说明>`（冒号后必须有空格且说明非空）
+  release-gate:
+    name: Release commit gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push'
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate release commit
+        id: check
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --pretty=format:%s)"
+          echo "Head commit subject: $subject"
+
+          release='false'
+          if [[ "$subject" =~ ^release:\ .+$ ]]; then
+            echo "符合 release 格式，继续执行流水线"
+            release='true'
+          else
+            echo "::error::非 release 格式提交，跳过流水线。要求格式: \"release: xxx\"（冒号+空格，当前: \"$subject\"）"
+          fi
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
   web:
     name: Web (typecheck / test / build)
+    needs: release-gate
+    # push 事件必须通过 release 门禁；PR / 手动触发不受限
+    if: github.event_name != 'push' || needs.release-gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -50,6 +83,9 @@ jobs:
 
   rust:
     name: Rust (cargo check)
+    needs: release-gate
+    # push 事件必须通过 release 门禁；PR / 手动触发不受限
+    if: github.event_name != 'push' || needs.release-gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
