@@ -1,0 +1,164 @@
+# Gitee Go 流水线：Tauri 桌面端（Linux）自动打包并发布 Gitee Release
+#
+# 使用前提：
+# 1. 在 Gitee 仓库「流水线」页面开通 Gitee Go，流水线会自动识别本文件。
+# 2. 在流水线「变量管理」中添加自定义（私密）变量 GITEE_TOKEN：
+#    在 https://gitee.com/profile/personal_access_tokens 生成，需具备 projects 权限。
+#    未配置时流水线仍会完成构建，产物可在构建记录中下载，仅跳过 Release 发布。
+# 3. 云端构建环境为 Linux 容器，只能产出 Linux 桌面包（AppImage/deb/rpm）；
+#    Windows/macOS/移动端请继续使用 GitHub Actions 多平台矩阵流水线。
+#
+# 触发方式：
+# - 推送 v 开头的 Tag 自动触发（GitHub 同步任务推送的 Tag 也会触发）
+# - 页面手动「开始构建」（无 Tag 时回退使用 package.json 的版本号）
+version: '1.0'
+name: release-pipeline
+displayName: '桌面端打包发布'
+
+triggers:
+  push:
+    tags:
+      # 正则匹配 v 开头的 Tag，如 v0.0.2、v1.2.3-beta.1
+      include:
+        - ^v.*
+
+stages:
+  - name: stage-build-release
+    displayName: '构建与发布'
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      - step: build@nodejs
+        name: build_tauri_linux
+        displayName: 'Tauri Linux 构建'
+        # 需 Node >= 20.19（Vite 8 / pnpm 11 要求）。
+        # 具体可选版本以流水线编辑器下拉列表为准，不可用时改选最接近的版本。
+        nodeVersion: '22.12.0'
+        # 构建缓存：Rust 工具链/注册表 + pnpm 包缓存，二次构建提速明显
+        caches:
+          - /root/.cargo
+          - /root/.rustup
+          - /root/.npm
+        commands:
+          - |
+            set -euo pipefail
+            export CI=true
+
+            # ---------- 0. 确定版本号：优先取 Tag，回退 package.json ----------
+            if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+              TAG="$(git describe --tags --exact-match 2>/dev/null || true)"
+            else
+              TAG=""
+            fi
+            if [ -z "${TAG}" ]; then
+              TAG="v$(node -p "require('./package.json').version")"
+              echo "未检出 Tag，回退使用 package.json 版本: ${TAG}"
+            fi
+            export TAG
+            echo "本次构建版本: ${TAG}"
+
+            # ---------- 1. 安装依赖并构建前端 ----------
+            npm config set registry https://registry.npmmirror.com
+            npm install -g pnpm@11
+            pnpm install --frozen-lockfile
+            pnpm build
+
+            # ---------- 2. 安装 Rust 工具链（国内镜像加速） ----------
+            mkdir -p "$HOME/.cargo"
+            cat > "$HOME/.cargo/config.toml" <<'EOF'
+            [source.crates-io]
+            replace-with = 'rsproxy'
+            [source.rsproxy]
+            registry = "sparse+https://rsproxy.cn/index/"
+            EOF
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup target add x86_64-unknown-linux-gnu
+
+            # ---------- 3. 安装 Tauri Linux 系统依赖 ----------
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get update -qq
+              apt-get install -y -qq \
+                libwebkit2gtk-4.1-dev \
+                libayatana-appindicator3-dev \
+                librsvg2-dev \
+                patchelf \
+                file \
+                libssl-dev \
+                build-essential
+            else
+              echo "::warning::云端环境非 Debian 系，无法自动安装 webkit2gtk 等依赖；请改用自建 Linux 私有构建节点并预装依赖"
+            fi
+
+            # ---------- 4. Tauri 桌面端构建（Linux x64） ----------
+            pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm
+
+            # ---------- 5. 收集产物到 stage/（统一加平台前缀防重名） ----------
+            mkdir -p stage
+            BUNDLE_DIR="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
+            for dir in appimage deb rpm; do
+              for f in "$BUNDLE_DIR/$dir"/*; do
+                [ -f "$f" ] || continue
+                cp -f "$f" "stage/linux-x64-$(basename "$f")"
+              done
+            done
+            if [ -z "$(ls -A stage 2>/dev/null)" ]; then
+              echo "::error::未找到任何构建产物"
+              exit 1
+            fi
+            ls -lh stage
+
+            # ---------- 6. 发布 Gitee Release ----------
+            OWNER="${GITEE_OWNER:-drshare}"
+            REPO="${GITEE_REPO:-directopt-tauri}"
+            if [ -z "${GITEE_TOKEN:-}" ]; then
+              echo "::warning::未配置流水线变量 GITEE_TOKEN，跳过 Release 发布；产物见构建记录制品"
+              exit 0
+            fi
+            API="https://gitee.com/api/v5/repos/${OWNER}/${REPO}"
+
+            # v1.2.3-beta.1 形式的 Tag 标记为预发布
+            PRERELEASE=false
+            case "${TAG}" in
+              *-*) PRERELEASE=true ;;
+            esac
+            export PRERELEASE BODY
+            BODY="由 Gitee Go 流水线自动构建发布：${TAG}"
+
+            # 幂等：Gitee 附件不支持同名覆盖，重建前先删除旧 Release
+            OLD_ID="$(curl -sS "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" \
+              | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(String(JSON.parse(d).id??''))}catch{console.log('')}})")"
+            if [ -n "${OLD_ID}" ]; then
+              echo "发现旧 Release (id=${OLD_ID})，删除后重建"
+              curl -sS -X DELETE "${API}/releases/${OLD_ID}?access_token=${GITEE_TOKEN}" > /dev/null || true
+            fi
+
+            PAYLOAD="$(node -e "console.log(JSON.stringify({access_token:process.env.GITEE_TOKEN,tag_name:process.env.TAG,name:process.env.TAG,body:process.env.BODY,prerelease:process.env.PRERELEASE==='true'}))")"
+            RESP="$(curl -sS -X POST -H 'Content-Type: application/json' -d "${PAYLOAD}" "${API}/releases")"
+            RID="$(printf '%s' "${RESP}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(String(JSON.parse(d).id??''))}catch{console.log('')}})")"
+            if [ -z "${RID}" ]; then
+              echo "::error::创建 Gitee Release 失败，响应：${RESP}"
+              exit 1
+            fi
+            echo "已创建 Release id=${RID}"
+
+            for f in stage/*; do
+              if curl -sS --max-time 600 -X POST \
+                   -F "access_token=${GITEE_TOKEN}" \
+                   -F "file=@${f}" \
+                   "${API}/releases/${RID}/attach_files" > /dev/null; then
+                echo "已上传: $(basename "$f")"
+              else
+                echo "::warning::上传失败: $(basename "$f")"
+              fi
+            done
+            echo "发布完成: https://gitee.com/${OWNER}/${REPO}/releases/${RID}"
+        artifacts:
+          # 构建产物暂存：AppImage / deb / rpm，可在构建记录中下载
+          - name: DESKTOP_BUNDLES
+            path:
+              - stage
+        notify: []
+        strategy:
+          retry: '0'
