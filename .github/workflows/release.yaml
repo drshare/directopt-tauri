@@ -247,6 +247,13 @@ jobs:
         continue-on-error: true
         run: pnpm tauri ios init
 
+      # pnpm v11 在 Xcode「Build Rust Code」Run Script 子进程中做依赖状态检查时会因无 TTY 中止；
+      # 该子进程既不继承 workflow env（CI / npm_config_*），也不读项目根 .npmrc（cwd 在 src-tauri/gen/apple），
+      # 唯一能穿透的方式是把配置写入 runner 全局 .npmrc（全局安装的 pnpm 必定读取）
+      - name: Disable pnpm modules purge prompt (global, iOS only)
+        if: matrix.platform == 'ios'
+        run: pnpm config set confirm-modules-purge false --global
+
       # ---------------- 签名配置 ----------------
       # secrets 不能写在 step 级 if 里，先探测再输出
       - name: Check Android signing secrets
