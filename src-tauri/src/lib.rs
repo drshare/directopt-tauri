@@ -391,8 +391,16 @@ pub fn run() {
             clear_data_files,
             open_log_dir
         ])
-        .setup(|_app| {
+        .setup(|app| {
             log::info!("应用启动：日志系统就绪（写入文件 directopt.log）");
+            // 原生窗口标题与发布版本保持一致：「绿电直连新能源优化配置软件 V{版本}」
+            // 版本取自 Cargo.toml（CARGO_PKG_VERSION），与 package.json / tauri.conf.json / git tag 同源
+            if let Some(win) = app.get_webview_window("main") {
+                let title = format!("绿电直连新能源优化配置软件 V{}", env!("CARGO_PKG_VERSION"));
+                if let Err(e) = win.set_title(&title) {
+                    log::warn!("设置窗口标题失败：{e}");
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

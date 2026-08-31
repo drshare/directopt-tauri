@@ -12,7 +12,8 @@
   "app": {
     "windows": [
       {
-        "title": "directopt-desktop",
+        "label": "main",
+        "title": "绿电直连新能源优化配置软件",
         "width": 800,
         "height": 600
       }

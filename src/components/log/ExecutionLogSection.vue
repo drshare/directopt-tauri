@@ -59,7 +59,7 @@ function onClear() {
           执行日志 · 计算过程文档
         </CardTitle>
         <CardDescription>
-          左栏记录上传解析、每阶段进度与结果（最新在前，点击条目展开详情）；右栏为详细计算过程文档，与日志阶段一一对应
+          左栏记录上传解析、每阶段进度与结果（按时间顺序排列，最新日志自动滚动到底部；点击条目展开详情）；右栏为详细计算过程文档，与日志阶段一一对应
         </CardDescription>
       </div>
       <div class="flex items-center gap-2 self-start sm:self-auto">

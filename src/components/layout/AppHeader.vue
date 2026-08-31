@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { Cloud, FolderOpen, LoaderCircle, Play, Timer } from "@lucide/vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import FileManagerDialog from "@/components/files/FileManagerDialog.vue";
 import { computation } from "@/composables/useComputation";
 import { startCompute } from "@/composables/useStartCompute";
+import { APP_VERSION, APP_TITLE } from "@/lib/appVersion";
 
 const filesOpen = ref(false);
 
@@ -19,6 +20,11 @@ const statusBadge: Record<string, { label: string; cls: string }> = {
 function handleFiles() {
   filesOpen.value = true;
 }
+
+// 与发布版本保持一致：同步页面/Webview 标题（原生窗口标题由 Rust 端设置）
+onMounted(() => {
+  document.title = APP_TITLE;
+});
 </script>
 
 <template>
@@ -31,7 +37,7 @@ function handleFiles() {
         <div class="min-w-0 leading-tight">
           <div class="flex min-w-0 items-center gap-2">
             <h1 class="truncate text-sm font-semibold tracking-tight sm:text-base">绿电直连新能源优化配置软件</h1>
-            <Badge variant="outline" class="shrink-0 text-xs font-normal text-muted-foreground">V2.2</Badge>
+            <Badge variant="outline" class="shrink-0 text-xs font-normal text-muted-foreground">V{{ APP_VERSION }}</Badge>
           </div>
           <p class="hidden truncate text-xs text-muted-foreground sm:block">风电 · 光伏 · 储能最优容量配置计算</p>
         </div>

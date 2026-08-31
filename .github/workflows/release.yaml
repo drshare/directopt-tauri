@@ -22,6 +22,8 @@ env:
   NDK_VERSION: 27.2.12479018
   TAG_NAME: ${{ github.ref_name }}
   CARGO_TERM_COLOR: always
+  # 让 pnpm 在 CI 下不触发交互式提示（与 .npmrc 的 confirm-modules-purge=false 双保险）
+  CI: 'true'
 
 jobs:
   # 1. 前端只构建一次，产物共享给全部平台：矩阵里不再重复跑 vite build

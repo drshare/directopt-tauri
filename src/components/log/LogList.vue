@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { ChevronRight } from "@lucide/vue";
 import { Badge } from "@/components/ui/badge";
 import type { LogEntry, LogLevel } from "@/composables/useExecutionLog";
@@ -12,7 +12,29 @@ const props = defineProps<{
   fill?: boolean;
 }>();
 
-const ordered = computed(() => [...props.entries].reverse());
+// 自然的时序排列：最旧在上、最新在下（不再 reverse）
+const ordered = computed(() => [...props.entries]);
+
+// 智能自动滚动：仅当用户已在底部时跟随最新日志，避免打断向上阅读历史
+const scrollRef = ref<HTMLOListElement | null>(null);
+const stickToBottom = ref(true);
+
+function onScroll() {
+  if (!scrollRef.value) return;
+  const el = scrollRef.value;
+  // 距离底部 ≤ 24px 视为「贴底」
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+}
+
+watch(
+  () => props.entries.length,
+  async () => {
+    await nextTick();
+    if (stickToBottom.value && scrollRef.value) {
+      scrollRef.value.scrollTop = scrollRef.value.scrollHeight;
+    }
+  },
+);
 
 const levelStyle: Record<LogLevel, { dot: string; label: string }> = {
   info: { dot: "bg-sky-500", label: "信息" },
@@ -42,8 +64,10 @@ function stageClass(stage: string): string {
 
 <template>
   <ol
+    ref="scrollRef"
     class="space-y-1 overflow-y-auto rounded-lg border bg-muted/20 p-2 font-mono text-xs"
     :class="props.fill ? 'h-full min-h-0' : 'max-h-96'"
+    @scroll="onScroll"
   >
     <li v-for="entry in ordered" :key="entry.seq">
       <details :open="defaultOpen && entry.detail !== undefined">

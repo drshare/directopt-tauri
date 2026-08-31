@@ -5,6 +5,7 @@ import {
   buildComputeParams,
   buildCurveData,
   formatMetricItem,
+  type ComputeParamsOut,
   type ComputeResultPayload,
   type ProgressPayload,
 } from "@/lib/computeTypes";
@@ -120,6 +121,70 @@ interface ProgressView {
   stage: string;
   message: string;
   detail?: string;
+}
+
+/** 各计算阶段的入参摘要（每一步计算之前打印，便于核对输入驱动） */
+function stageInputParams(
+  stage: string,
+  p: ComputeParamsOut,
+  isGa: boolean,
+): Record<string, unknown> {
+  const range = {
+    风电MW: [p.range.windStart, p.range.windEnd],
+    光伏MW: [p.range.pvStart, p.range.pvEnd],
+    储能MWh: [p.range.essStart, p.range.essEnd],
+  };
+  switch (stage) {
+    case "仿真初始化":
+      return { 阶段入参: stage, 择优范围: range, 技术参数: p.tech };
+    case "计算进度":
+      // 寻优迭代阶段：仅在阶段首次进入时打印，避免 BO 每次评估都重复
+      return {
+        阶段入参: stage,
+        择优范围: range,
+        算法参数: isGa
+          ? {
+              寻优算法: "遗传算法（V2.2）",
+              种群大小: p.ga.populationSize,
+              遗传代数: p.ga.generations,
+              交叉概率: p.ga.crossoverRate,
+              变异概率: p.ga.mutationRate,
+            }
+          : {
+              寻优算法: "贝叶斯优化（V3.0）",
+              总评估次数: p.bo.nIter,
+              初始随机采样点数: p.bo.nInit,
+            },
+      };
+    case "最优方案仿真":
+      return {
+        阶段入参: stage,
+        择优范围: range,
+        输入: "上一阶段寻优最优配置（best: 风电kW/光伏kW/储能kWh）",
+        技术参数: p.tech,
+        经济参数: p.econ,
+        输配电费方案: p.scheme,
+      };
+    case "敏感性分析":
+      return {
+        阶段入参: stage,
+        择优范围: range,
+        基准配置: "上一阶段寻优最优配置（best）",
+        扰动档位: "±25% / ±20% / ±15% / ±10% / ±5% / 0% / +5% / +10% / +15% / +20% / +25%（步长 5%，共 11 档）",
+        经济参数: p.econ,
+      };
+    case "结果汇总":
+      return {
+        阶段入参: stage,
+        择优范围: range,
+        技术参数: p.tech,
+        经济参数: p.econ,
+        输配电费方案: p.scheme,
+        优化目标: p.objective,
+      };
+    default:
+      return { 阶段入参: stage, 择优范围: range };
+  }
 }
 
 /** 后端进度消息 → 日志阶段 / 精炼文案 / 阶段详情（文档章节引用） */
@@ -305,6 +370,13 @@ export async function runComputation(): Promise<void> {
       computation.message = e.payload.message;
       const view = classifyProgress(e.payload.message);
       if (view.stage !== prevStage) {
+        // 新阶段开始：先打印该阶段的输入参数，再记录阶段起始时间
+        addLog(
+          view.stage,
+          "info",
+          `📥 ${view.stage} 阶段入参（点击展开查看）`,
+          jsonDetail(stageInputParams(view.stage, paramsPayload, isGa)),
+        );
         stageMarks.push({ stage: view.stage, ts: Date.now() });
         prevStage = view.stage;
       }
