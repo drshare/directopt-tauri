@@ -24,6 +24,9 @@ env:
   CARGO_TERM_COLOR: always
   # 让 pnpm 在 CI 下不触发交互式提示（与 .npmrc 的 confirm-modules-purge=false 双保险）
   CI: 'true'
+  # pnpm/action-setup@v6 的依赖状态检查子进程不吃 CI、也不读项目根 .npmrc（cwd 不在项目树内），
+  # 必须以 npm_config_* 环境变量形式注入，才能绕过「移除 node_modules 需 TTY 确认」导致 iOS 等 CI 构建失败
+  npm_config_confirm_modules_purge: 'false'
 
 jobs:
   # 1. 前端只构建一次，产物共享给全部平台：矩阵里不再重复跑 vite build
