@@ -187,14 +187,17 @@ jobs:
           echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
+      # iOS 定位为 best-effort（构建步与产物收集都只告警），
+      # 因此 Xcode 探测/版本校验一律降级为 warning，不再阻断整条 release 流水线
       - name: Select the newest available Xcode
         if: matrix.platform == 'ios'
+        continue-on-error: true
         run: |
           set -euo pipefail
           newest="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
           if [ -z "$newest" ]; then
-            echo "::error::未在该 runner 上找到 Xcode"
-            exit 1
+            echo "::warning::未在该 runner 上找到 Xcode，跳过 Xcode 选择"
+            exit 0
           fi
           sudo xcode-select -s "$newest/Contents/Developer"
           # 注意：xcodebuild 在 macOS 上用 NSFileHandle 写 stdout，若用
@@ -206,15 +209,13 @@ jobs:
           xcodebuild -version > "$RUNNER_TEMP/xcode_version.txt"
           version="$(awk '/^Xcode /{print $2; exit}' "$RUNNER_TEMP/xcode_version.txt")"
           if [ -z "${version:-}" ]; then
-            echo "::error::无法从 xcodebuild -version 输出中解析 Xcode 版本"
+            echo "::warning::无法从 xcodebuild -version 输出中解析 Xcode 版本"
             cat "$RUNNER_TEMP/xcode_version.txt"
-            exit 1
+          elif [ "${version%%.*}" -lt 16 ]; then
+            echo "::warning::Xcode $version 过旧，生成的工程需要 Xcode 16+（构建大概率失败，此处仅告警不阻断）"
+          else
+            echo "::notice::Using Xcode $version"
           fi
-          if [ "${version%%.*}" -lt 16 ]; then
-            echo "::error::Xcode $version 过旧，生成的工程需要 Xcode 16+"
-            exit 1
-          fi
-          echo "::notice::Using Xcode $version"
           xcodebuild -version
 
       # ---------------- 前端构建 ----------------
@@ -257,14 +258,26 @@ jobs:
       - name: Init iOS project
         if: matrix.platform == 'ios'
         continue-on-error: true
-        run: pnpm tauri ios init
+        run: |
+          set -euo pipefail
+          pnpm tauri ios init
+          # 回显生成的工程：init 若未产出 Xcode 工程，后续 build 必然失败，
+          # 这里提前暴露，避免把问题推迟到构建阶段才被发现
+          ls -d src-tauri/gen/apple/*.xcodeproj src-tauri/gen/apple/*.xcworkspace 2>/dev/null || \
+            echo "::warning::tauri ios init 后未找到 Xcode 工程文件"
 
       # pnpm v11 在 Xcode「Build Rust Code」Run Script 子进程中做依赖状态检查时会因无 TTY 中止；
       # 该子进程既不继承 workflow env（CI / npm_config_*），也不读项目根 .npmrc（cwd 在 src-tauri/gen/apple），
       # 唯一能穿透的方式是把配置写入 runner 全局 .npmrc（全局安装的 pnpm 必定读取）
       - name: Disable pnpm modules purge prompt (global, iOS only)
         if: matrix.platform == 'ios'
-        run: pnpm config set confirm-modules-purge false --global
+        run: |
+          set -euo pipefail
+          pnpm config set confirm-modules-purge false --global
+          # 回读校验：确认配置真的落到 runner 全局 .npmrc，避免静默失效后排障无据
+          echo "confirm-modules-purge = $(pnpm config get confirm-modules-purge --global)"
+          echo "--- global npmrc (${HOME}/.npmrc) ---"
+          cat "${HOME}/.npmrc" 2>/dev/null || echo "(无全局 .npmrc，配置可能未生效)"
 
       # ---------------- 签名配置 ----------------
       # secrets 不能写在 step 级 if 里，先探测再输出
@@ -369,13 +382,22 @@ jobs:
           set -euo pipefail
           mkdir -p src-tauri/gen/apple/dist
           APP=""
-          if [ -d src-tauri/gen/apple/build ]; then
-            APP=$(find src-tauri/gen/apple/build -maxdepth 2 -type d -name '*.app' | head -n 1)
+          # 产物实际路径随 Xcode 版本变化，常见为
+          # build/Build/Products/Release-iphoneos/<App>.app —— 距 build 已有 4 层，
+          # 原来的 -maxdepth 2 必然漏掉，导致构建明明成功却归档不到任何产物。
+          # 这里放宽深度、排除 Pods，并在找不到 .app 时回退到 .xcarchive。
+          if [ -d src-tauri/gen/apple ]; then
+            APP=$(find src-tauri/gen/apple -maxdepth 8 -type d -name '*.app' \
+              -not -path '*/Pods/*' 2>/dev/null | head -n 1)
+            if [ -z "${APP}" ]; then
+              APP=$(find src-tauri/gen/apple -maxdepth 8 -type d -name '*.xcarchive' 2>/dev/null | head -n 1)
+            fi
           fi
           if [ -z "${APP}" ]; then
-            echo "::warning::未找到 iOS 构建产物 (.app)，跳过打包"
+            echo "::warning::未找到 iOS 构建产物 (.app/.xcarchive)，跳过打包"
             exit 0
           fi
+          echo "::notice::归档 iOS 产物: ${APP}"
           tar -czf "src-tauri/gen/apple/dist/directopt-desktop_${TAG_NAME}_ios_aarch64.app.tar.gz" \
             -C "$(dirname "${APP}")" "$(basename "${APP}")"
 
